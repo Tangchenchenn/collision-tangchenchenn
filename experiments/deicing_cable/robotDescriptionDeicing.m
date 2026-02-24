@@ -84,13 +84,13 @@ env.contact_params.omega_mag = sim_params.omega_target; % 旋转速度模长
 env.contact_params.compute_friction = true; % 开启摩擦计算
 env.contact_params.active_time = 0.8;
 % ==============================
-env.contact_params.sigma_t = 1.5e5;  % 冰的抗拉强度 (1.5 MPa) [cite: 1, 10]
+env.contact_params.sigma_t = 1.5e6;  % 冰的抗拉强度 (1.5 MPa) [cite: 1, 10]
 env.contact_params.z_root = 0.07;     % 冰柱根部高度 (悬臂梁固定端 Z 坐标)
 env.contact_params.is_broken = false; % 初始状态：未破碎
 env.contact_params.peak_force = 0;    % 初始化峰值力字段
 % =============================================
 %% 边界条件
-fixed_node_indices = [1]; % 固定第一个节点作为旋转驱动点
+fixed_node_indices = [1, 14]; % 同时固定两根绳子的根部节点
 input_log_node = size(nodes, 1);
 
 
