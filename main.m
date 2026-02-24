@@ -53,10 +53,11 @@ softRobot.undef_refTwist = computeRefTwist_bend_twist_spring(bend_twist_springs,
 softRobot.refTwist = computeRefTwist_bend_twist_spring(bend_twist_springs, softRobot.a1, softRobot.tangent, softRobot.undef_refTwist);
 
 % 边界条件
-n_nodes_per_rod = 13; 
-fixed_node_indices = [1, n_nodes_per_rod + 1]; 
-softRobot.fixed_nodes = fixed_node_indices;
-softRobot.fixed_edges = []; 
+% n_nodes_per_rod = 13; 
+% fixed_node_indices = [1, n_nodes_per_rod + 1]; 
+softRobot.fixed_nodes = fixed_node_indices; 
+softRobot.fixed_edges = [];
+
 [softRobot.fixedDOF, softRobot.freeDOF] = FindFixedFreeDOF(softRobot.fixed_nodes, softRobot.fixed_edges, softRobot.n_DOF, softRobot.n_nodes);
 
 %% ==========================================
