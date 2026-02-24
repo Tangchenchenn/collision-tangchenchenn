@@ -169,67 +169,19 @@ for timeStep = 1:Nsteps
     end
 end
 % --- [循环结束后打印结果] ---
+% --- [循环结束后打印结果] ---
 if has_captured_break
     fprintf('\n====== 仿真分析结果 ======\n');
     fprintf('断裂时刻: %.4f s\n', breaking_event_data.time);
     fprintf('断裂峰值力: %.2f N\n', breaking_event_data.force);
     fprintf('==========================\n');
+    % 【新增】将断裂时间存入 imc 结构体中，供绘图函数读取
+    imc.breaking_time = breaking_event_data.time;
+else
+    % 如果没有断裂，将断裂时间设为无穷大
+    imc.breaking_time = inf; 
 end
-%% ==========================================
-% %% 3. 动画生成 (Post-Processing)
-% %% ==========================================
-% fprintf('仿真完成，开始生成动画视频...\n');
-% videoFileName = 'Deicing_Spin_Fixed.mp4';
-% v = VideoWriter(videoFileName, 'MPEG-4'); v.FrameRate = 30; open(v);
-% 
-% h_fig = figure('Renderer', 'opengl', 'Color', 'w'); 
-% set(h_fig, 'Position', [100, 100, 800, 600]); % 设置窗口大小
-% 
-% for k = sim_params.logStep : sim_params.logStep : Nsteps
-%     t_frame = dof_with_time(1, k);
-%     q_frame = dof_with_time(2:end, k);
-% 
-%     % 跳过全零帧（如果有）
-%     if norm(q_frame) == 0, continue; end
-% 
-%     softRobot.q = q_frame; 
-% 
-%     % ----------------------------------------------------
-%     % 调用绘图函数
-%     % plot_MultiRod 内部现在会自动处理：
-%     % 1. 绘制不动的绳子 (q 本身就是随动坐标)
-%     % 2. 绘制绕圈的冰柱 (根据 t_frame 计算角度)
-%     % ----------------------------------------------------
-%     figure(h_fig);
-%     try
-%         plot_MultiRod(softRobot, t_frame, sim_params, environment, imc);
-%     catch ME
-%         warning('绘图出错: %s', ME.message);
-%         clf; plot_MultiRod(softRobot, t_frame, sim_params, environment, imc);
-%     end
-% 
-%     % 添加额外的标题信息 (力的大小)
-%     current_force = 0;
-%     if k <= length(F_history.contact)
-%         current_force = F_history.contact(k);
-%     end
-%     title(sprintf('Time: %.3fs | Contact Force: %.1f N', t_frame, current_force));
-% 
-%     % 写入视频
-%     frame = getframe(gcf);
-%     writeVideo(v, frame);
-% end
-% 
-% close(v);
-% fprintf('动画已保存: %s\n', videoFileName);
-% 
-% % 绘制总接触力曲线
-% figure; 
-% plot(time_arr, F_history.contact, 'r-', 'LineWidth', 1.5); 
-% title('Total Contact Force over Time'); 
-% xlabel('Time [s]'); ylabel('Force [N]');
-% grid on;
-%% ==========================================
+
 %% 3. 动画生成 (Post-Processing) - 修正版
 %% ==========================================
 fprintf('仿真完成，开始生成动画视频...\n');
