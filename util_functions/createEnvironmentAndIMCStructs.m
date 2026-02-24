@@ -46,7 +46,8 @@ if ismember("selfContact", env.ext_force_list)
         imc.z_root = env.contact_params.z_root;
         imc.is_broken = env.contact_params.is_broken;
         % =============================================
-
+        % === 添加这一行 ===
+        imc.theta_accumulated = 0; % 初始化累计角度为0
     end
     if ismember("selfFriction", env.ext_force_list)
         imc.compute_friction = true;
