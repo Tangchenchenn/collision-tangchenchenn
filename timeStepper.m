@@ -90,7 +90,12 @@ while ~solved % % error > sim_params.tol
         JForces = JForces + Jb_shell;
 
     end
-
+    % === [新增] 提前初始化所有外力向量，防止 omega=0 或未开启时报错 ===
+    F_cen = zeros(n_DOF, 1); 
+    F_cor = zeros(n_DOF, 1);
+    Fd    = zeros(n_DOF, 1); 
+    Fc    = zeros(n_DOF, 1);
+    Ffr   = zeros(n_DOF, 1);
     %% External force and Jacobian calculation
     if ismember("gravity",env.ext_force_list) % Gravity 
         if(sim_params.static_sim)
@@ -232,14 +237,31 @@ a2 = a2_iter;
 u = (q - q0) / sim_params.dt;
 
 %% 提取各类力的大小 (取范数或原始矢量)
+% % 这里的 Fs, Fb, Ft, F_cen, F_cor, Fd 都是 Newton 循环最后一次迭代计算的值
+% force_out.stretch = Fs;      % 拉伸内力矢量
+% force_out.bend    = Fb;      % 弯曲内力矢量
+% force_out.twist   = Ft;      % 扭转内力矢量
+% force_out.cent    = F_cen;   % 离心力矢量
+% force_out.coriolis= F_cor;   % 科氏力矢量
+% force_out.drag    = Fd;      % 空气阻力矢量
+%% 提取各类力的大小 (取范数或原始矢量)
+% 为了防止某些力未被开启/计算导致“变量无法识别”报错，先做安全初始化
+%% 提取各类力的大小 (取范数或原始矢量)
 % 这里的 Fs, Fb, Ft, F_cen, F_cor, Fd 都是 Newton 循环最后一次迭代计算的值
+if ~exist('Fs', 'var'), Fs = zeros(n_DOF, 1); end
+if ~exist('Fb', 'var'), Fb = zeros(n_DOF, 1); end
+if ~exist('Ft', 'var'), Ft = zeros(n_DOF, 1); end
+
 force_out.stretch = Fs;      % 拉伸内力矢量
 force_out.bend    = Fb;      % 弯曲内力矢量
 force_out.twist   = Ft;      % 扭转内力矢量
-force_out.cent    = F_cen;   % 离心力矢量
-force_out.coriolis= F_cor;   % 科氏力矢量
-force_out.drag    = Fd;      % 空气阻力矢量
+force_out.cent    = F_cen;   % 离心力矢量 (已在上方安全初始化)
+force_out.coriolis= F_cor;   % 科氏力矢量 (已在上方安全初始化)
+force_out.drag    = Fd;      % 空气阻力矢量 (已在上方安全初始化)
+force_out.contact = Fc + Ffr;% 接触力 + 摩擦力总和 (已在上方安全初始化)
 
+%% update
+MultiRod.q=q;
 % --- [关键修复] 添加接触力输出 ---
 % 检查变量是否存在 (防止如果不开启 selfContact 导致报错)
 if exist('Fc', 'var')

@@ -71,10 +71,11 @@ sim_params.logStep = 10;
 dof_with_time = zeros(softRobot.n_DOF+1, Nsteps);
 dof_with_time(1,:) = time_arr;
 
-% 力记录初始化
+% 力和扭矩记录初始化
 F_history = struct('stretch', zeros(Nsteps,1), 'bend', zeros(Nsteps,1), ...
                    'twist', zeros(Nsteps,1), 'cent', zeros(Nsteps,1), ...
-                   'coriolis', zeros(Nsteps,1), 'contact', zeros(Nsteps,1)); % 注意：这里contact存的是总力
+                   'coriolis', zeros(Nsteps,1), 'contact', zeros(Nsteps,1), ...
+                   'motor_torque', zeros(Nsteps,1)); % <--- 新增这一个字段
 
 fprintf('开始物理仿真 (共 %d 步)...\n', Nsteps);
 
@@ -136,6 +137,26 @@ for timeStep = 1:Nsteps
         contact_forces_vec = reshape(force_now.contact(1:3*softRobot.n_nodes), 3, []);
         total_contact_force = sum(vecnorm(contact_forces_vec));
         F_history.contact(timeStep) = total_contact_force;
+
+        % === [新增] 计算马达驱动扭矩 (Motor Torque about Z-axis) ===
+        % 阻碍旋转的力包括：空气阻力 (drag)、科氏力 (coriolis)、接触摩擦力 (contact)
+        F_resistive = force_now.drag + force_now.coriolis + force_now.contact; 
+        F_res_vec = reshape(F_resistive(1:3*softRobot.n_nodes), 3, []);
+        
+        % 提取当前所有节点的坐标 (x, y)
+        nodes_pos = reshape(softRobot.q(1:3*softRobot.n_nodes), 3, []);
+        X = nodes_pos(1, :);
+        Y = nodes_pos(2, :);
+        
+        % 提取阻力在 X 和 Y 方向的分量
+        Fx = F_res_vec(1, :);
+        Fy = F_res_vec(2, :);
+        
+        % 扭矩 = r x F，关于 Z 轴的扭矩 Mz = X * Fy - Y * Fx
+        % 马达需要提供的扭矩与阻力扭矩大小相等、方向相反
+        node_torques_z = X .* Fy - Y .* Fx;
+        F_history.motor_torque(timeStep) = abs(sum(node_torques_z)); 
+        % ==========================================================
     end
     
     ctime = ctime + sim_params.dt;
@@ -271,8 +292,17 @@ close(v);
 fprintf('动画已保存: %s\n', videoFileName);
 
 % 绘制力曲线 (建议单独画一个清晰的图)
+% 绘制总接触力曲线
 figure; 
-plot(time_arr, F_history.contact, 'r-', 'LineWidth', 1.0); 
+subplot(2,1,1);
+plot(time_arr, F_history.contact, 'r-', 'LineWidth', 1.5); 
 title('Total Contact Force (Sampled)'); 
 xlabel('Time [s]'); ylabel('Force [N]');
+grid on;
+
+% 绘制马达扭矩曲线
+subplot(2,1,2);
+plot(time_arr, F_history.motor_torque, 'b-', 'LineWidth', 1.5); 
+title('Motor Driving Torque (Z-axis)'); 
+xlabel('Time [s]'); ylabel('Torque [N·m]');
 grid on;
