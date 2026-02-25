@@ -38,14 +38,28 @@ if ismember("selfContact", env.ext_force_list)
     imc.C = [];
     if isfield(env, 'contact_params')
         imc.ice_radius = env.contact_params.ice_radius;
-        imc.ice_center_dist = env.contact_params.ice_center_dist;
+        
+        % =====================================
+        % [修改] 读取新的多冰柱圆阵参数
+        if isfield(env.contact_params, 'num_ice')
+            imc.num_ice = env.contact_params.num_ice;
+            imc.array_radius = env.contact_params.array_radius;
+            imc.array_center_dist = env.contact_params.array_center_dist;
+            imc.omega_spin = env.contact_params.omega_spin;
+            imc.peak_force = env.contact_params.peak_force;
+        else
+            % 兼容未修改的单冰柱旧代码
+            imc.ice_center_dist = env.contact_params.ice_center_dist;
+        end
+        % =====================================
+        
         imc.rod_radius = env.contact_params.rod_radius;
         imc.omega_mag = env.contact_params.omega_mag;
-        % ==============================
+        
         imc.sigma_t = env.contact_params.sigma_t;
         imc.z_root = env.contact_params.z_root;
         imc.is_broken = env.contact_params.is_broken;
-        % =============================================
+        
         % === 添加这一行 ===
         imc.theta_accumulated = 0; % 初始化累计角度为0
     end

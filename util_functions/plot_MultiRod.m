@@ -65,44 +65,86 @@ function plot_MultiRod(MultiRod, ctime, sim_params, environment, imc)
     % % D. 绘制冰柱
     % surf(xc_rot, yc_rot, zc, 'FaceColor', [0 1 1], 'EdgeColor', 'none', 'FaceAlpha', 0.6);
 
-%% --- 3. [核心新增] 绘制旋转的冰柱 (随动系视角) ---
-    % 逻辑：绳子不动，冰柱以 -omega 速度绕中心公转
+% %% --- 3. [核心新增] 绘制旋转的冰柱 (随动系视角) ---
+%     % 逻辑：绳子不动，冰柱以 -omega 速度绕中心公转
+% 
+%     % 【新增判断】：只有在当前帧的时间 (ctime) 小于断裂时间时，才绘制冰柱
+%     is_broken_now = isfield(imc, 'breaking_time') && (ctime >= imc.breaking_time);
+% 
+%     if ~is_broken_now
+%         % A. 读取几何参数 (优先 imc，其次 environment)
+%         r_ice = 0.004; d_ice = 0.15; % 默认值
+%         if isfield(imc, 'ice_radius'), r_ice = imc.ice_radius; 
+%         elseif isfield(environment, 'contact_params'), r_ice = environment.contact_params.ice_radius; end
+% 
+%         if isfield(imc, 'ice_center_dist'), d_ice = imc.ice_center_dist; 
+%         elseif isfield(environment, 'contact_params'), d_ice = environment.contact_params.ice_center_dist; end
+% 
+%         % B. 计算旋转角度
+%         omega_val = 0;
+%         if isfield(sim_params, 'omega'), omega_val = norm(sim_params.omega); end
+%         % 随动系下冰柱反向旋转
+%         ice_angle = -omega_val * ctime; 
+% 
+%         % C. 生成并旋转圆柱体网格
+%         [xc, yc, zc] = cylinder(r_ice, 20);
+%         zc = zc * 0.2 - 0.1; % 高度 [-0.1, 0.1]
+% 
+%         % 初始位置：X轴正方向 d_ice 处
+%         xc = xc + d_ice; 
+% 
+%         % 应用旋转矩阵 (绕 Z 轴旋转 ice_angle)
+%         % x' = x*cos(t) - y*sin(t)
+%         % y' = x*sin(t) + y*cos(t)
+%         xc_rot = xc * cos(ice_angle) - yc * sin(ice_angle);
+%         yc_rot = xc * sin(ice_angle) + yc * cos(ice_angle);
+% 
+%         % D. 绘制冰柱
+%         surf(xc_rot, yc_rot, zc, 'FaceColor', [0 1 1], 'EdgeColor', 'none', 'FaceAlpha', 0.6);
+%     end
     
-    % 【新增判断】：只有在当前帧的时间 (ctime) 小于断裂时间时，才绘制冰柱
-    is_broken_now = isfield(imc, 'breaking_time') && (ctime >= imc.breaking_time);
-    
-    if ~is_broken_now
-        % A. 读取几何参数 (优先 imc，其次 environment)
-        r_ice = 0.004; d_ice = 0.15; % 默认值
-        if isfield(imc, 'ice_radius'), r_ice = imc.ice_radius; 
-        elseif isfield(environment, 'contact_params'), r_ice = environment.contact_params.ice_radius; end
-        
-        if isfield(imc, 'ice_center_dist'), d_ice = imc.ice_center_dist; 
-        elseif isfield(environment, 'contact_params'), d_ice = environment.contact_params.ice_center_dist; end
+%% 3. 绘制冰柱圆阵
+    if isfield(imc, 'num_ice')
+        % 提取几何与运动参数
+        num_ice = imc.num_ice;
+        R_ice = imc.ice_radius;
+        R_array = imc.array_radius;
+        L_center = imc.array_center_dist;
+        if isfield(imc, 'z_root'), z_root = imc.z_root; else, z_root = 0.07; end
 
-        % B. 计算旋转角度
-        omega_val = 0;
-        if isfield(sim_params, 'omega'), omega_val = norm(sim_params.omega); end
-        % 随动系下冰柱反向旋转
-        ice_angle = -omega_val * ctime; 
+        % 获取当前的公转累加角度
+        if isfield(imc, 'theta_accumulated')
+            theta_orb = -imc.theta_accumulated;
+        else
+            theta_orb = -imc.omega_mag * ctime;
+        end
+        rot_mat = [cos(theta_orb), -sin(theta_orb); sin(theta_orb), cos(theta_orb)];
 
-        % C. 生成并旋转圆柱体网格
-        [xc, yc, zc] = cylinder(r_ice, 20);
-        zc = zc * 0.2 - 0.1; % 高度 [-0.1, 0.1]
-        
-        % 初始位置：X轴正方向 d_ice 处
-        xc = xc + d_ice; 
-        
-        % 应用旋转矩阵 (绕 Z 轴旋转 ice_angle)
-        % x' = x*cos(t) - y*sin(t)
-        % y' = x*sin(t) + y*cos(t)
-        xc_rot = xc * cos(ice_angle) - yc * sin(ice_angle);
-        yc_rot = xc * sin(ice_angle) + yc * cos(ice_angle);
+        % 生成标准圆柱体网格数据 (20个面，使其看起来圆滑)
+        [X_cyl, Y_cyl, Z_cyl] = cylinder(R_ice, 20);
+        % 根据参数设置冰柱的高度范围 (从 z=0 到 z=z_root)
+        Z_cyl = Z_cyl * z_root; 
 
-        % D. 绘制冰柱
-        surf(xc_rot, yc_rot, zc, 'FaceColor', [0 1 1], 'EdgeColor', 'none', 'FaceAlpha', 0.6);
+        % 遍历并绘制阵列中的每一根冰柱
+        for j = 1:num_ice
+            % 只有在尚未断裂的情况下，才将其画出来
+            if ~isfield(imc, 'is_broken') || ~imc.is_broken(j)
+                
+                % 1. 计算第 j 根冰柱当前时刻的中心 (x, y) 坐标
+                phi_j = 2 * pi * (j - 1) / num_ice;
+                P0_j_xy = [L_center + R_array * cos(phi_j); R_array * sin(phi_j)];
+                P_ice_xy = rot_mat * P0_j_xy;
+
+                % 2. 将标准圆柱体平移到对应的位置
+                X_plot = X_cyl + P_ice_xy(1);
+                Y_plot = Y_cyl + P_ice_xy(2);
+
+                % 3. 绘制 3D 表面 (青色、无边框线、半透明)
+                surf(X_plot, Y_plot, Z_cyl, 'FaceColor', [0 1 1], ...
+                    'EdgeColor', 'none', 'FaceAlpha', 0.6);
+            end
+        end
     end
-
     %% 4. 绘制绳索
     %% 4. 绘制绳索
     for i = 1:n_edges
