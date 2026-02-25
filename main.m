@@ -84,24 +84,6 @@ fprintf('开始物理仿真 (共 %d 步)...\n', Nsteps);
 breaking_event_data = struct('time', NaN, 'force', 0, 'z_pos', NaN);
 has_captured_break = false;
 for timeStep = 1:Nsteps
-    % % --- 1. 马达驱动修正 ---
-    % % 【修正】在随动坐标系下，根节点不需要旋转！它相对于坐标系是静止的。
-    % % 我们只更新时间，不更新 softRobot.q 的固定点坐标。
-    % 
-    % % --- 2. 调用时间步进器 ---
-    % if(sim_params.use_midedge), tau_0 = updatePreComp_without_sign(softRobot.q, softRobot); else, tau_0 = []; end
-    % 
-    % % 传入 ctime 用于计算冰柱位置 (IceContact 需要)
-    % % [softRobot, stretch_springs, bend_twist_springs, hinge_springs, force_now] = ...
-    % %     timeStepper(softRobot, stretch_springs, bend_twist_springs, hinge_springs, ...
-    % %     triangle_springs, tau_0, environment, imc, sim_params, ctime);
-    % % [softRobot, stretch_springs, bend_twist_springs, hinge_springs, force_now, imc] = ...
-    % %     timeStepper(softRobot, stretch_springs, bend_twist_springs, hinge_springs, ...
-    % %     triangle_springs, tau_0, environment, imc, sim_params, ctime);
-    % [softRobot, stretch_springs, bend_twist_springs, hinge_springs, force_now, imc] = ...
-    %     timeStepper(softRobot, stretch_springs, bend_twist_springs, hinge_springs, ...
-    %     triangle_springs, tau_0, environment, imc, sim_params, ctime);
-    % 1. 计算当前瞬时角速度 (线性爬升)
     if ctime < sim_params.ramp_time
         ratio = ctime / sim_params.ramp_time;
         current_omega_mag = ratio * sim_params.omega_target;
@@ -116,20 +98,25 @@ for timeStep = 1:Nsteps
     % 3. [关键] 精确积分计算当前冰柱的角度位置
     % 角度 = 上一步角度 + 当前转速 * 时间步长
     imc.theta_accumulated = imc.theta_accumulated + current_omega_mag * sim_params.dt;
-
+    break_times = inf(1, env.contact_params.num_ice); % 记录每根冰柱的断裂时间
     % 4. 调用时间步进器
     if(sim_params.use_midedge), tau_0 = updatePreComp_without_sign(softRobot.q, softRobot); else, tau_0 = []; end
     
     [softRobot, stretch_springs, bend_twist_springs, hinge_springs, force_now, imc] = ...
         timeStepper(softRobot, stretch_springs, bend_twist_springs, hinge_springs, ...
         triangle_springs, tau_0, environment, imc, sim_params, ctime);
-    if imc.is_broken && ~has_captured_break
-        breaking_event_data.time = ctime;
-        breaking_event_data.force = imc.peak_force;
-        % 记录发生断裂的节点位置（可选）
-        breaking_event_data.z_pos = softRobot.q(3*softRobot.n_nodes); 
-        
-        has_captured_break = true; % 确保只记录第一次断裂
+    % ================= [多冰柱阵列：断裂事件捕获] =================
+    if any(imc.is_broken)
+        % 找出这一帧新断裂的冰柱
+        newly_broken = imc.is_broken & isinf(break_times);
+        if any(newly_broken)
+            broken_indices = find(newly_broken);
+            for idx = broken_indices
+                break_times(idx) = ctime;
+                fprintf('>>> 冰柱 #%d 断裂! 时刻: %.4fs | 峰值力: %.1fN\n', ...
+                    idx, ctime, imc.peak_force(idx));
+            end
+        end
     end
     % --- 3. 数据记录修正 ---
     % 【修正】记录所有节点的接触力总和，而不仅仅是末端节点
@@ -170,18 +157,18 @@ for timeStep = 1:Nsteps
 end
 % --- [循环结束后打印结果] ---
 % --- [循环结束后打印结果] ---
-if has_captured_break
-    fprintf('\n====== 仿真分析结果 ======\n');
-    fprintf('断裂时刻: %.4f s\n', breaking_event_data.time);
-    fprintf('断裂峰值力: %.2f N\n', breaking_event_data.force);
-    fprintf('==========================\n');
-    % 【新增】将断裂时间存入 imc 结构体中，供绘图函数读取
-    imc.breaking_time = breaking_event_data.time;
-else
-    % 如果没有断裂，将断裂时间设为无穷大
-    imc.breaking_time = inf; 
+fprintf('\n====== 仿真分析结果 (自转速度: %d rad/s) ======\n', imc.omega_spin);
+broken_count = sum(imc.is_broken);
+fprintf('共计击碎冰柱: %d / %d\n', broken_count, imc.num_ice);
+for j = 1:imc.num_ice
+    if imc.is_broken(j)
+        fprintf('  - 冰柱 #%d: 断裂时刻 %.4fs | 峰值力: %.2f N\n', j, break_times(j), imc.peak_force(j));
+    else
+        fprintf('  - 冰柱 #%d: 完好\n', j);
+    end
 end
-
+fprintf('除冰率: %.1f%%\n', (broken_count/imc.num_ice)*100);
+fprintf('==========================\n');
 %% 3. 动画生成 (Post-Processing) - 修正版
 %% ==========================================
 fprintf('仿真完成，开始生成动画视频...\n');
