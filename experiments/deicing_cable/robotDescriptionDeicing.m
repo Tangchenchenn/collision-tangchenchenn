@@ -75,19 +75,27 @@ env.g = [0; 0; -9.81]; % 重力加速度
 env.air_density = 1.225; % 空气密度 (kg/m^3)
 env.Cd = 1.0; % 阻力系数
 env.rho = 1.225; % 空气密度 (kg/m^3)
+% ==============================
+% 冰柱几何与运动参数（圆周阵列配置）
+env.contact_params.ice_radius = 0.015;       % 单根冰柱半径 (16mm)
+env.contact_params.num_ice = 10;             % [修改] 冰柱数量 m=10
+env.contact_params.array_radius = 0.1;       % [新增] 圆周的半径 R=0.1
+% [修改] 圆周的圆心距除冰绳旋转中心距离 = 0.1 + 0.15 = 0.25
+env.contact_params.array_center_dist = env.contact_params.array_radius + 0.15; 
 
-% 冰柱几何与运动参数（必须添加，否则碰撞检测失效）
-env.contact_params.ice_radius = 0.015;      % 冰柱半径 (16mm)
-env.contact_params.ice_center_dist = 0.15;  % 冰柱中心到轮毂中心的距离 (0.15m)
-env.contact_params.rod_radius = geom.rod_r0; % 绳索半径 (从 geom 获取)
-env.contact_params.omega_mag = sim_params.omega_target; % 旋转速度模长
-env.contact_params.compute_friction = true; % 开启摩擦计算
+env.contact_params.omega_mag = sim_params.omega_target; % 公转角速度
+env.contact_params.omega_spin = 150;         % [新增] 冰柱自转角速度(rad/s) -> 后续改这个值作对比分析
+
+env.contact_params.compute_friction = true; 
 env.contact_params.active_time = 0.8;
 % ==============================
-env.contact_params.sigma_t = 1.5e6;  % 冰的抗拉强度 (1.5 MPa) [cite: 1, 10]
-env.contact_params.z_root = 0.07;     % 冰柱根部高度 (悬臂梁固定端 Z 坐标)
-env.contact_params.is_broken = false; % 初始状态：未破碎
-env.contact_params.peak_force = 0;    % 初始化峰值力字段
+env.contact_params.sigma_t = 1.5e6;  
+env.contact_params.z_root = 0.07;     
+env.contact_params.rod_radius = geom.rod_r0;
+
+% [修改] 将断裂状态和峰值力记录改为数组，每根冰柱独立记录
+env.contact_params.is_broken = false(1, env.contact_params.num_ice); 
+env.contact_params.peak_force = zeros(1, env.contact_params.num_ice); 
 % =============================================
 %% 边界条件
 fixed_node_indices = [1, 14]; % 同时固定两根绳子的根部节点
