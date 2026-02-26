@@ -83,6 +83,7 @@ fprintf('开始物理仿真 (共 %d 步)...\n', Nsteps);
 % --- [循环前初始化] ---
 breaking_event_data = struct('time', NaN, 'force', 0, 'z_pos', NaN);
 has_captured_break = false;
+break_times = inf(1, env.contact_params.num_ice); % 记录每根冰柱的断裂时间
 for timeStep = 1:Nsteps
     if ctime < sim_params.ramp_time
         ratio = ctime / sim_params.ramp_time;
@@ -98,7 +99,7 @@ for timeStep = 1:Nsteps
     % 3. [关键] 精确积分计算当前冰柱的角度位置
     % 角度 = 上一步角度 + 当前转速 * 时间步长
     imc.theta_accumulated = imc.theta_accumulated + current_omega_mag * sim_params.dt;
-    break_times = inf(1, env.contact_params.num_ice); % 记录每根冰柱的断裂时间
+    
     % 4. 调用时间步进器
     if(sim_params.use_midedge), tau_0 = updatePreComp_without_sign(softRobot.q, softRobot); else, tau_0 = []; end
     
@@ -200,6 +201,15 @@ for k = sim_params.logStep : sim_params.logStep : Nsteps
     
     % 1. 调用绘图
     % 注意：plot_MultiRod 内部有 clf，会清除上一帧，这很好
+    % 放在调用 plot_MultiRod 之前
+    if t_frame < sim_params.ramp_time
+        imc.theta_accumulated = 0.5 * (sim_params.omega_target / sim_params.ramp_time) * (t_frame^2);
+    else
+        theta_ramp = 0.5 * sim_params.omega_target * sim_params.ramp_time;
+        imc.theta_accumulated = theta_ramp + sim_params.omega_target * (t_frame - sim_params.ramp_time);
+    end
+    % === 【核心修复】：动态重构当前帧的冰柱断裂状态 ===
+    imc.is_broken = (t_frame >= break_times);
     try
         plot_MultiRod(softRobot, t_frame, sim_params, environment, imc);
     catch ME
@@ -207,15 +217,29 @@ for k = sim_params.logStep : sim_params.logStep : Nsteps
         clf; plot_MultiRod(softRobot, t_frame, sim_params, environment, imc);
     end
     
-    % 2. 【关键修改】强制锁定坐标轴和视角
+% 2. 【关键修改】彻底锁死坐标轴和相机视角 (杜绝一切画面缩放和抖动)
     % 必须在 plot_MultiRod 之后执行，覆盖它的默认设置
-    axis equal;       % 保证比例一致
-    xlim(x_lims);     % 强制 X 范围
-    ylim(y_lims);     % 强制 Y 范围
-    zlim(z_lims);     % 强制 Z 范围
+    xlim(x_lims);     
+    ylim(y_lims);     
+    zlim(z_lims);     
+    axis equal;       
+    view(3);          
     grid on;
-    view(3);          % 锁定三维视角
-    
+
+    % 获取当前坐标轴句柄
+    ax = gca;
+    % 锁死数据范围
+    ax.XLimMode = 'manual';
+    ax.YLimMode = 'manual';
+    ax.ZLimMode = 'manual';
+    % 锁死长宽比例
+    ax.DataAspectRatioMode = 'manual';
+    ax.PlotBoxAspectRatioMode = 'manual';
+    % 锁死相机的距离、目标点和视野角度 (解决画面忽大忽小的根本方法)
+    ax.CameraPositionMode = 'manual';
+    ax.CameraTargetMode = 'manual';
+    ax.CameraViewAngleMode = 'manual';
+
     % 3. 更新标题
     current_force = 0;
     if k <= length(F_history.contact)
@@ -223,9 +247,17 @@ for k = sim_params.logStep : sim_params.logStep : Nsteps
     end
     title(sprintf('Time: %.3fs | Force: %.1f N', t_frame, current_force));
     
-    % 4. 写入视频
-    frame = getframe(gcf);
-    writeVideo(v, frame);
+        % 4. 写入视频
+        frame = getframe(gcf);
+        
+        % --- [新增：强制统一分辨率以避开报错] ---
+        % 将每一帧强制缩放到 v.Height x v.Width (即第一帧或默认的大小)
+        if size(frame.cdata, 1) ~= v.Height || size(frame.cdata, 2) ~= v.Width
+            frame.cdata = imresize(frame.cdata, [v.Height, v.Width]);
+        end
+        % ---------------------------------------
+        
+        writeVideo(v, frame);
 end
 
 close(v);
