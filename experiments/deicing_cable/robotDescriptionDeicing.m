@@ -26,7 +26,7 @@ sim_params.omega = [0; 0; 0];       % 初始角速度向量为 0
 imc.theta_accumulated = 0;          % [新增] 用于精确记录冰柱转过的角度
 % 时间步长 (高速旋转下建议调小步长)
 sim_params.dt = 1e-4; 
-sim_params.totalTime = 3.0; % 仿真时长
+sim_params.totalTime = 5.0; % 仿真时长
 
 % --- robotDescriptionDeicing.m 中添加 ---
 sim_params.tol = 1e-3;           % 力的平衡容差 (Newton 迭代停止标准)
@@ -84,7 +84,7 @@ env.contact_params.array_radius = 0.1;       % [新增] 圆周的半径 R=0.1
 env.contact_params.array_center_dist = env.contact_params.array_radius + 0.15; 
 
 env.contact_params.omega_mag = sim_params.omega_target; % 公转角速度
-env.contact_params.omega_spin = 150;         % [新增] 冰柱自转角速度(rad/s) -> 后续改这个值作对比分析
+env.contact_params.omega_spin = 1;         % [新增] 冰柱自转角速度(rad/s) -> 后续改这个值作对比分析
 
 env.contact_params.compute_friction = true; 
 env.contact_params.active_time = 0.8;
