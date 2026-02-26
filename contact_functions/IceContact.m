@@ -51,9 +51,11 @@ function [Fc, Jc, Ffr, Jfr, imc] = IceContact(imc, q, q0, rod_edges, iter, dt, c
     for j = 1:num_ice
         if imc.is_broken(j), continue; end % 已断裂则跳过
         
-        % 1. 计算第 j 根冰柱的当前绝对位置
-        % 初始时刻，圆阵中心在 (L_center, 0)，冰柱围绕该中心均匀分布
-        phi_j = 2 * pi * (j - 1) / num_ice;
+% 1. 计算第 j 根冰柱的当前绝对位置
+        % 加入自转角度 theta_spin = omega_spin * current_time
+        theta_spin = omega_spin * current_time;
+        phi_j = 2 * pi * (j - 1) / num_ice + theta_spin;
+        
         P0_j_xy = [L_center + R_array * cos(phi_j); R_array * sin(phi_j)];
         P_ice_xy = rot_mat * P0_j_xy; % 当前时刻的公转位置
         
