@@ -104,6 +104,7 @@ function plot_MultiRod(MultiRod, ctime, sim_params, environment, imc)
 %     end
     
 %% 3. 绘制冰柱圆阵
+%% 3. 绘制冰柱圆阵
     if isfield(imc, 'num_ice')
         % 提取几何与运动参数
         num_ice = imc.num_ice;
@@ -112,36 +113,51 @@ function plot_MultiRod(MultiRod, ctime, sim_params, environment, imc)
         L_center = imc.array_center_dist;
         if isfield(imc, 'z_root'), z_root = imc.z_root; else, z_root = 0.07; end
 
-        % 获取当前的公转累加角度
+        % --- [计算公转角度] ---
+        % 获取当前的公转累加角度 (整个阵列绕原点旋转)
         if isfield(imc, 'theta_accumulated')
             theta_orb = -imc.theta_accumulated;
         else
             theta_orb = -imc.omega_mag * ctime;
         end
         rot_mat = [cos(theta_orb), -sin(theta_orb); sin(theta_orb), cos(theta_orb)];
+        
+        % --- [新增：计算自转角度] ---
+        % 获取当前的阵列自转角度 (10根冰柱绕自己阵列圆心的旋转)
+        if isfield(imc, 'omega_spin')
+            theta_spin = imc.omega_spin * ctime; 
+        else
+            theta_spin = 0;
+        end
 
         % 生成标准圆柱体网格数据 (20个面，使其看起来圆滑)
         [X_cyl, Y_cyl, Z_cyl] = cylinder(R_ice, 20);
-        % 根据参数设置冰柱的高度范围 (从 z=0 到 z=z_root)
         Z_cyl = Z_cyl * z_root; 
 
         % 遍历并绘制阵列中的每一根冰柱
         for j = 1:num_ice
-            % 只有在尚未断裂的情况下，才将其画出来
             if ~isfield(imc, 'is_broken') || ~imc.is_broken(j)
                 
                 % 1. 计算第 j 根冰柱当前时刻的中心 (x, y) 坐标
-                phi_j = 2 * pi * (j - 1) / num_ice;
+                % 【关键修改】：这里的相位角加上了随时间变化的 theta_spin
+                phi_j = 2 * pi * (j - 1) / num_ice + theta_spin; 
+                
+                % 在未公转的坐标系下，冰柱相对于原点的位置：
+                % X = 阵列圆心距离(L_center) + 冰柱在阵列中的X偏移
+                % Y = 冰柱在阵列中的Y偏移
                 P0_j_xy = [L_center + R_array * cos(phi_j); R_array * sin(phi_j)];
+                
+                % 应用公转矩阵，让整个阵列绕着原点旋转
                 P_ice_xy = rot_mat * P0_j_xy;
 
-                % 2. 将标准圆柱体平移到对应的位置
+                % 2. 将标准圆柱体平移到对应的最终位置
                 X_plot = X_cyl + P_ice_xy(1);
                 Y_plot = Y_cyl + P_ice_xy(2);
 
-                % 3. 绘制 3D 表面 (青色、无边框线、半透明)
+                % 3. 绘制 3D 表面 
                 surf(X_plot, Y_plot, Z_cyl, 'FaceColor', [0 1 1], ...
-                    'EdgeColor', 'none', 'FaceAlpha', 0.6);
+                    'EdgeColor', 'k', 'EdgeAlpha', 0.2, 'FaceAlpha', 0.6); 
+                % 加上了淡黑色的边框('EdgeColor', 'k', 'EdgeAlpha', 0.2)，在高速旋转时视觉效果更好
             end
         end
     end
