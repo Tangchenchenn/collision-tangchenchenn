@@ -90,7 +90,7 @@ while ~success
     end
 
     if ismember("aerodynamic", env.ext_force_list) % Aerodynamic drag
-        [Fd, ~] = getAerodynamicDrag(q,q0,sim_params.dt,env,MultiRod);
+        [Fd, ~] = getAerodynamicDrag(q,q0,sim_params.dt,env,MultiRod,sim_params.omega);
         Forces = Forces + Fd;
     end
 
