@@ -1,5 +1,5 @@
 % create_deicing_cable_input_symmetric.m
-n_nodes_per_rod = 13; % 每根绳子的节点数
+n_nodes_per_rod = 17; % 每根绳子的节点数
 R_hub = 0.016;        % 轮毂半径 [cite: 295]
 L_total = 0.246;      % 绳索总长 [cite: 295]
 phi_0A = 0;           % 第一根绳子的初始安装角

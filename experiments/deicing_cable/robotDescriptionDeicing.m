@@ -77,11 +77,11 @@ env.Cd = 1.0; % 阻力系数
 env.rho = 1.225; % 空气密度 (kg/m^3)
 % ==============================
 % 冰柱几何与运动参数（圆周阵列配置）
-env.contact_params.ice_radius = 0.015;       % 单根冰柱半径 (16mm)
-env.contact_params.num_ice = 10;             % [修改] 冰柱数量 m=10
-env.contact_params.array_radius = 0.1;       % [新增] 圆周的半径 R=0.1
+env.contact_params.ice_radius = 0.01;       % 单根冰柱半径 (10mm)
+env.contact_params.num_ice = 40;             % [修改] 冰柱数量 m=10
+env.contact_params.array_radius = 0.145;       % [新增] 圆周的半径 R=0.1
 % [修改] 圆周的圆心距除冰绳旋转中心距离 = 0.1 + 0.15 = 0.25
-env.contact_params.array_center_dist = env.contact_params.array_radius + 0.15; 
+env.contact_params.array_center_dist = env.contact_params.array_radius + 0.18; 
 
 env.contact_params.omega_mag = sim_params.omega_target; % 公转角速度
 env.contact_params.omega_spin = 1;         % [新增] 冰柱自转角速度(rad/s) -> 后续改这个值作对比分析
@@ -105,6 +105,6 @@ input_log_node = size(nodes, 1);
 %% Plot dimensions (在 robotDescriptionDeicing.m 中修改)
 % 5. 坐标轴范围补全 (防止报错：无法识别字段 plot_x)
 % 如果已经在 robotDescription 里改过，这里可以不改，或者在此处强制指定：
-sim_params.plot_x = [-0.3, 0.3]; 
-sim_params.plot_y = [-0.3, 0.3];
+sim_params.plot_x = [-0.6, 0.6]; 
+sim_params.plot_y = [-0.6, 0.6];
 sim_params.plot_z = [-0.1, 0.5]; % 考虑到 3D 甩起的高度
