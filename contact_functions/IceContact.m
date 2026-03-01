@@ -21,11 +21,19 @@ function [Fc, Jc, Ffr, Jfr, imc] = IceContact(imc, q, q0, rod_edges, iter, dt, c
     % 读取几何与运动参数
     R_ice = imc.ice_radius; 
     R_rod = imc.rod_radius; 
-    num_ice = imc.num_ice;
-    R_array = imc.array_radius;
-    L_center = imc.array_center_dist;
     
-    omega_orbit = imc.omega_mag; % 公转速度
+    % 【核心修改 1】：判断是否使用了自定义的冰柱坐标矩阵
+    use_custom_positions = isfield(imc, 'ice_positions');
+    if use_custom_positions
+        num_ice = size(imc.ice_positions, 1);
+        imc.num_ice = num_ice; % 强制同步数量
+    else
+        num_ice = imc.num_ice;
+        R_array = imc.array_radius;
+        L_center = imc.array_center_dist;
+    end
+    
+    omega_orbit = imc.omega_mag; % 公转速度 (主轴转速)
     if isfield(imc, 'omega_spin'), omega_spin = imc.omega_spin; else, omega_spin = 0; end
     
     sigma_t = imc.sigma_t; z_root = imc.z_root; 
@@ -49,17 +57,22 @@ function [Fc, Jc, Ffr, Jfr, imc] = IceContact(imc, q, q0, rod_edges, iter, dt, c
 
     %% 遍历所有冰柱
     for j = 1:num_ice
-        if imc.is_broken(j), continue; end % 已断裂则跳过
+        if isfield(imc, 'is_broken') && imc.is_broken(j), continue; end % 已断裂则跳过
         
-% 1. 计算第 j 根冰柱的当前绝对位置
-        % 加入自转角度 theta_spin = omega_spin * current_time
-        theta_spin = omega_spin * current_time;
-        phi_j = 2 * pi * (j - 1) / num_ice + theta_spin;
+        % 【核心修改 2】：计算第 j 根冰柱的当前绝对位置
+        if use_custom_positions
+            % 直接读取自定义的绝对坐标
+            P0_j_xy = imc.ice_positions(j, :)';
+        else
+            % 原有的环形阵列逻辑
+            theta_spin = omega_spin * current_time;
+            phi_j = 2 * pi * (j - 1) / num_ice + theta_spin;
+            P0_j_xy = [L_center + R_array * cos(phi_j); R_array * sin(phi_j)];
+        end
         
-        P0_j_xy = [L_center + R_array * cos(phi_j); R_array * sin(phi_j)];
         P_ice_xy = rot_mat * P0_j_xy; % 当前时刻的公转位置
         
-        % 2. 计算该冰柱中心点由于公转产生的线速度 (v = w × r)
+        % 计算该冰柱中心点由于公转产生的线速度 (v = w × r)
         V_orbit_xy = [-omega_orbit * P_ice_xy(2); omega_orbit * P_ice_xy(1)];
 
         % 检测与所有节点的碰撞
@@ -92,9 +105,12 @@ function [Fc, Jc, Ffr, Jfr, imc] = IceContact(imc, q, q0, rod_edges, iter, dt, c
                 Jc(idx, idx) = Jc(idx, idx) + J_node;
                 
                 if imc.compute_friction
-                    % 3. 运动学叠加：自转线速度 + 公转线速度
-                    % 自转线速度: v_spin = w_spin × diff
-                    V_spin_xy = [-omega_spin * diff(2); omega_spin * diff(1)];
+                    % 运动学叠加：自转线速度 + 公转线速度
+                    if use_custom_positions
+                        V_spin_xy = [0; 0]; % 离散分布不再计算阵列自转
+                    else
+                        V_spin_xy = [-omega_spin * diff(2); omega_spin * diff(1)];
+                    end
                     
                     % 表面接触点的绝对速度
                     V_ice_total = [V_orbit_xy + V_spin_xy; 0];
