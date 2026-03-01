@@ -188,6 +188,11 @@ x_lims = [-plot_limit, plot_limit];
 y_lims = [-plot_limit, plot_limit];
 z_lims = [-0.1, 0.4]; % Z轴通常需要根据绳子高度调整
 
+% 【修复】VideoWriter 在写入第一帧之前通常不知道分辨率（v.Height/v.Width 可能是 []）。
+% 用第一帧的尺寸作为“目标分辨率”，后续统一缩放即可避免 || 标量逻辑报错和尺寸不一致报错。
+targetH = [];  % 目标帧高（像素）
+targetW = [];  % 目标帧宽（像素）
+
 for k = sim_params.logStep : sim_params.logStep : Nsteps
     t_frame = dof_with_time(1, k);
     q_frame = dof_with_time(2:end, k);
@@ -248,15 +253,19 @@ for k = sim_params.logStep : sim_params.logStep : Nsteps
     title(sprintf('Time: %.3fs | Force: %.1f N', t_frame, current_force));
     
         % 4. 写入视频
-        frame = getframe(gcf);
-        
-        % --- [新增：强制统一分辨率以避开报错] ---
-        % 将每一帧强制缩放到 v.Height x v.Width (即第一帧或默认的大小)
-        if size(frame.cdata, 1) ~= v.Height || size(frame.cdata, 2) ~= v.Width
-            frame.cdata = imresize(frame.cdata, [v.Height, v.Width]);
+        frame = getframe(h_fig); % 用固定句柄，避免抓到别的窗口
+
+        % --- [修复：统一每帧分辨率] ---
+        if isempty(targetH)
+            targetH = size(frame.cdata, 1);
+            targetW = size(frame.cdata, 2);
+        end
+        % 注意：这里必须保证 if 条件是“标量逻辑”，因此用 isequal 得到标量 true/false
+        if ~isequal(size(frame.cdata, 1), targetH) || ~isequal(size(frame.cdata, 2), targetW)
+            frame.cdata = imresize(frame.cdata, [targetH, targetW]);
         end
         % ---------------------------------------
-        
+
         writeVideo(v, frame);
 end
 
