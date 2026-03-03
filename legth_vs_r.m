@@ -13,8 +13,8 @@ RPM_target     = 1000;
 omega_target   = RPM_target * 2 * pi / 60;     % rad/s
 
 ratio_L_R      = 5;
-R_hub_list     = [0.032,0.034,0.036,0.038,0.040,0.042,0.044];
-
+% R_hub_list     = [0.032,0.034,0.036,0.038,0.040,0.042,0.044];
+R_hub_list     = [0.040,0.042,0.044,0.046,0.048,0.5];
 n_cases        = length(R_hub_list);
 
 stable_radius  = nan(n_cases,1);
