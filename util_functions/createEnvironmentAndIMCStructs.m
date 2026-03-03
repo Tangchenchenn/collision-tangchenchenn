@@ -59,7 +59,10 @@ if ismember("selfContact", env.ext_force_list)
         imc.sigma_t = env.contact_params.sigma_t;
         imc.z_root = env.contact_params.z_root;
         imc.is_broken = env.contact_params.is_broken;
-        
+        % === 【新增代码：将冰柱上下边界传递给底层】 ===
+        imc.ice_z_min = env.contact_params.ice_z_min;
+        imc.ice_z_max = env.contact_params.ice_z_max;
+        % ==============================================
         % === 添加这一行 ===
         imc.theta_accumulated = 0; % 初始化累计角度为0
     end
