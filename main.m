@@ -1,3 +1,287 @@
+% clc; clear all; close all;
+% 
+% % 路径设置
+% projectRoot = fileparts(mfilename('fullpath')); 
+% cd(projectRoot);
+% addpath(genpath(projectRoot));
+% 
+% %% 1. 加载配置
+% robotDescriptionDeicing; 
+% 
+% % 强制参数修正
+% if ~isfield(sim_params, 'omega'), sim_params.omega = [0; 0; sim_params.omega_target]; end
+% env.ext_force_list = unique([env.ext_force_list, "centrifugal", "coriolis"]);
+% 
+% % 保存初始坐标
+% nodes_original = nodes;
+% 
+% % 创建几何与对象
+% [nodes, edges, rod_edges, shell_edges, rod_shell_joint_edges, rod_shell_joint_total_edges, face_nodes, face_edges, face_shell_edges, ...
+%     elStretchRod, elStretchShell, elBendRod, elBendSign, elBendShell, sign_faces, face_unit_norms] ...
+%     = createGeometry(nodes, edges, face_nodes);
+% 
+% twist_angles = zeros(size(rod_edges,1)+size(rod_shell_joint_total_edges,1),1);
+% [environment, imc] = createEnvironmentAndIMCStructs(env, geom, material, sim_params);
+% 
+% softRobot = MultiRod(geom, material, twist_angles, nodes, edges, rod_edges, shell_edges, ...
+%     rod_shell_joint_edges, rod_shell_joint_total_edges, face_nodes, sign_faces, ...
+%     face_edges, face_shell_edges, sim_params, environment);
+% softRobot.nodes_local = nodes_original; 
+% 
+% %% 创建弹簧
+% n_stretch = size(elStretchRod,1) + size(elStretchShell,1);
+% n_bend_twist = size(elBendRod,1);
+% if n_stretch==0, stretch_springs=[]; else
+%     for s=1:n_stretch
+%         if s <= size(elStretchRod,1), stretch_springs(s) = stretchSpring(softRobot.refLen(s), elStretchRod(s,:), softRobot);
+%         else, stretch_springs(s) = stretchSpring(softRobot.refLen(s), elStretchShell(s-size(elStretchRod,1),:), softRobot, softRobot.ks(s)); end
+%     end
+% end
+% if n_bend_twist==0, bend_twist_springs=[]; else
+%     for b=1:n_bend_twist
+%         bend_twist_springs(b) = bendTwistSpring(elBendRod(b,:), elBendSign(b,:), [0 0], 0, softRobot);
+%     end
+% end
+% hinge_springs = []; triangle_springs = [];
+% 
+% %% 初始化系统
+% softRobot = computeSpaceParallel(softRobot);
+% theta = softRobot.q0(3*softRobot.n_nodes+1 : 3*softRobot.n_nodes+softRobot.n_edges_dof);
+% [softRobot.m1, softRobot.m2] = computeMaterialDirectors(softRobot.a1, softRobot.a2, theta);
+% bend_twist_springs = setkappa(softRobot, bend_twist_springs);
+% softRobot.undef_refTwist = computeRefTwist_bend_twist_spring(bend_twist_springs, softRobot.a1, softRobot.tangent, zeros(n_bend_twist,1));
+% softRobot.refTwist = computeRefTwist_bend_twist_spring(bend_twist_springs, softRobot.a1, softRobot.tangent, softRobot.undef_refTwist);
+% 
+% % 边界条件
+% softRobot.fixed_nodes = fixed_node_indices; 
+% softRobot.fixed_edges = [];
+% 
+% [softRobot.fixedDOF, softRobot.freeDOF] = FindFixedFreeDOF(softRobot.fixed_nodes, softRobot.fixed_edges, softRobot.n_DOF, softRobot.n_nodes);
+% 
+% %% ==========================================
+% %% 2. 物理仿真循环 (Run Simulation)
+% %% ==========================================
+% Nsteps = round(sim_params.totalTime/sim_params.dt);
+% ctime = 0; 
+% time_arr = linspace(0, sim_params.totalTime, Nsteps);
+% sim_params.log_data = true; 
+% sim_params.logStep = 10;   
+% 
+% dof_with_time = zeros(softRobot.n_DOF+1, Nsteps);
+% dof_with_time(1,:) = time_arr;
+% 
+% % 力和扭矩记录初始化
+% F_history = struct('stretch', zeros(Nsteps,1), 'bend', zeros(Nsteps,1), ...
+%                    'twist', zeros(Nsteps,1), 'cent', zeros(Nsteps,1), ...
+%                    'coriolis', zeros(Nsteps,1), 'contact', zeros(Nsteps,1), ...
+%                    'motor_torque', zeros(Nsteps,1)); 
+% 
+% fprintf('开始物理仿真 (共 %d 步)...\n', Nsteps);
+% 
+% % --- [循环前初始化] ---
+% breaking_event_data = struct('time', NaN, 'force', 0, 'z_pos', NaN);
+% has_captured_break = false;
+% break_times = inf(1, imc.num_ice); % 记录每根冰柱的断裂时间
+% 
+% % 【新增状态追踪】：记录上一时刻的峰值力和碰撞位置
+% previous_peak_forces = zeros(1, imc.num_ice); 
+% collision_dists = zeros(1, imc.num_ice); 
+% 
+% for timeStep = 1:Nsteps
+%     if ctime < sim_params.ramp_time
+%         ratio = ctime / sim_params.ramp_time;
+%         current_omega_mag = ratio * sim_params.omega_target;
+%     else
+%         current_omega_mag = sim_params.omega_target;
+%     end
+% 
+%     sim_params.omega = [0; 0; current_omega_mag]; 
+%     imc.omega_mag = current_omega_mag;            
+%     imc.theta_accumulated = imc.theta_accumulated + current_omega_mag * sim_params.dt;
+% 
+%     if(sim_params.use_midedge), tau_0 = updatePreComp_without_sign(softRobot.q, softRobot); else, tau_0 = []; end
+% 
+%     [softRobot, stretch_springs, bend_twist_springs, hinge_springs, force_now, imc] = ...
+%         timeStepper(softRobot, stretch_springs, bend_twist_springs, hinge_springs, ...
+%         triangle_springs, tau_0, environment, imc, sim_params, ctime);
+% 
+%     % === [新增核心逻辑]：追踪峰值接触力与碰撞位置 ===
+%     % 只要 peak_force 增加了，就说明当前正在发生碰撞挤压
+%     is_colliding_now = imc.peak_force > previous_peak_forces;
+%     actual_peak_force_this_step = sum(imc.peak_force(is_colliding_now));
+% 
+%     % 计算碰撞点到冰柱根部的距离 (这里取受力最大节点的 Z 坐标，假设根部在 Z=0)
+%     if any(is_colliding_now) && isfield(force_now, 'contact')
+%         contact_forces_vec = reshape(force_now.contact(1:3*softRobot.n_nodes), 3, []);
+%         node_contact_mags = vecnorm(contact_forces_vec);
+%         [~, max_node] = max(node_contact_mags);
+% 
+%         nodes_pos = reshape(softRobot.q(1:3*softRobot.n_nodes), 3, []);
+%         hit_z = abs(nodes_pos(3, max_node)); % 提取碰撞点的 Z 轴高度作为根部距离
+% 
+%         % 记录发生碰撞的冰柱的高度
+%         collision_dists(is_colliding_now) = hit_z;
+%     end
+% 
+%     previous_peak_forces = imc.peak_force; % 更新记录以备下一步使用
+% 
+%     % ================= [多冰柱阵列：断裂事件捕获] =================
+%     if any(imc.is_broken)
+%         newly_broken = imc.is_broken & isinf(break_times);
+%         if any(newly_broken)
+%             broken_indices = find(newly_broken);
+%             for idx = broken_indices
+%                 break_times(idx) = ctime;
+%                 fprintf('>>> 冰柱 #%02d 断裂! 时刻: %.4fs | 峰值力: %6.1f N | 距根部距离: %.3f m\n', ...
+%                     idx, ctime, imc.peak_force(idx), collision_dists(idx));
+%             end
+%         end
+%     end
+% 
+%     % --- 数据记录修正 ---
+%     if isfield(force_now, 'contact')
+%         contact_forces_vec = reshape(force_now.contact(1:3*softRobot.n_nodes), 3, []);
+%         total_contact_force = sum(vecnorm(contact_forces_vec));
+% 
+%         % 【修复图像失真】：取当前节点接触力与瞬间真实峰值力的最大值
+%         F_history.contact(timeStep) = max(total_contact_force, actual_peak_force_this_step);
+% 
+%         % === 计算马达驱动扭矩 (Motor Torque about Z-axis) ===
+%         F_resistive = force_now.drag + force_now.coriolis + force_now.contact; 
+%         F_res_vec = reshape(F_resistive(1:3*softRobot.n_nodes), 3, []);
+% 
+%         nodes_pos = reshape(softRobot.q(1:3*softRobot.n_nodes), 3, []);
+%         X = nodes_pos(1, :);
+%         Y = nodes_pos(2, :);
+% 
+%         Fx = F_res_vec(1, :);
+%         Fy = F_res_vec(2, :);
+% 
+%         node_torques_z = X .* Fy - Y .* Fx;
+%         F_history.motor_torque(timeStep) = abs(sum(node_torques_z)); 
+%     end
+% 
+%     ctime = ctime + sim_params.dt;
+%     softRobot.q0 = softRobot.q; 
+% 
+%     if sim_params.log_data && mod(timeStep, sim_params.logStep) == 0
+%         dof_with_time(2:end,timeStep) = softRobot.q;
+%         fprintf('进度: %5.1f%% | 接触力总和: %6.2f N\n', (timeStep/Nsteps)*100, F_history.contact(timeStep));
+%     end
+% end
+% 
+% % --- [循环结束后打印最终统计结果] ---
+% fprintf('\n====== 仿真分析结果 (自转速度: %d rad/s) ======\n', imc.omega_spin);
+% broken_count = sum(imc.is_broken);
+% fprintf('共计击碎冰柱: %d / %d\n', broken_count, imc.num_ice);
+% for j = 1:imc.num_ice
+%     if imc.is_broken(j)
+%         fprintf('  - 冰柱 #%02d: 断裂时刻 %.4fs | 峰值力: %6.2f N | 碰撞点距根部: %.3f m\n', ...
+%             j, break_times(j), imc.peak_force(j), collision_dists(j));
+%     else
+%         % 处理完好但受力的冰柱，以及彻底挥空的冰柱
+%         if imc.peak_force(j) > 0
+%             fprintf('  - 冰柱 #%02d: 完好(受冲击)  | 碰撞峰值力: %6.2f N | 碰撞点距根部: %.3f m\n', ...
+%                 j, imc.peak_force(j), collision_dists(j));
+%         else
+%             fprintf('  - 冰柱 #%02d: 完好(未碰撞)  | 受力: 0.00 N\n', j);
+%         end
+%     end
+% end
+% fprintf('除冰率: %.1f%%\n', (broken_count/imc.num_ice)*100);
+% fprintf('==========================\n');
+% 
+% %% 3. 动画生成 (Post-Processing) 
+% %% ==========================================
+% fprintf('仿真完成，开始生成动画视频...\n');
+% videoFileName = 'Deicing_Spin_Fixed.mp4';
+% v = VideoWriter(videoFileName, 'MPEG-4'); 
+% v.FrameRate = 30; 
+% open(v);
+% 
+% h_fig = figure('Renderer', 'opengl', 'Color', 'w'); 
+% set(h_fig, 'Position', [100, 100, 1024, 768]); 
+% 
+% plot_limit = 0.3; 
+% x_lims = [-plot_limit, plot_limit];
+% y_lims = [-plot_limit, plot_limit];
+% z_lims = [-0.1, 0.4]; 
+% 
+% targetH = [];  
+% targetW = [];  
+% 
+% for k = sim_params.logStep : sim_params.logStep : Nsteps
+%     t_frame = dof_with_time(1, k);
+%     q_frame = dof_with_time(2:end, k);
+% 
+%     if norm(q_frame) == 0, continue; end
+% 
+%     softRobot.q = q_frame; 
+%     figure(h_fig); 
+% 
+%     if t_frame < sim_params.ramp_time
+%         imc.theta_accumulated = 0.5 * (sim_params.omega_target / sim_params.ramp_time) * (t_frame^2);
+%     else
+%         theta_ramp = 0.5 * sim_params.omega_target * sim_params.ramp_time;
+%         imc.theta_accumulated = theta_ramp + sim_params.omega_target * (t_frame - sim_params.ramp_time);
+%     end
+% 
+%     imc.is_broken = (t_frame >= break_times);
+%     try
+%         plot_MultiRod(softRobot, t_frame, sim_params, environment, imc);
+%     catch ME
+%         warning('绘图出错: %s', ME.message);
+%         clf; plot_MultiRod(softRobot, t_frame, sim_params, environment, imc);
+%     end
+% 
+%     xlim(x_lims); ylim(y_lims); zlim(z_lims);     
+%     axis equal; view(3); grid on;
+% 
+%     ax = gca;
+%     ax.XLimMode = 'manual'; ax.YLimMode = 'manual'; ax.ZLimMode = 'manual';
+%     ax.DataAspectRatioMode = 'manual'; ax.PlotBoxAspectRatioMode = 'manual';
+%     ax.CameraPositionMode = 'manual'; ax.CameraTargetMode = 'manual'; ax.CameraViewAngleMode = 'manual';
+% 
+%     current_force = 0;
+%     if k <= length(F_history.contact)
+%         current_force = F_history.contact(k);
+%     end
+%     title(sprintf('Time: %.3fs | Force: %.1f N', t_frame, current_force));
+% 
+%     frame = getframe(h_fig); 
+%     if isempty(targetH)
+%         targetH = size(frame.cdata, 1);
+%         targetW = size(frame.cdata, 2);
+%     end
+%     if ~isequal(size(frame.cdata, 1), targetH) || ~isequal(size(frame.cdata, 2), targetW)
+%         frame.cdata = imresize(frame.cdata, [targetH, targetW]);
+%     end
+%     writeVideo(v, frame);
+% end
+% 
+% close(v);
+% fprintf('动画已保存: %s\n', videoFileName);
+% 
+% % ==========================================
+% % 绘制力与扭矩结果曲线 (附带断裂点打点功能)
+% % ==========================================
+% figure; 
+% subplot(2,1,1);
+% plot(time_arr, F_history.contact, 'r-', 'LineWidth', 1.5); 
+% hold on;
+% % 把断裂发生的瞬间用黑色五角星标记出来
+% valid_breaks = isfinite(break_times);
+% scatter(break_times(valid_breaks), imc.peak_force(valid_breaks), 60, 'k', 'p', 'filled');
+% title('Total Contact Force with Ice Breaking Points'); 
+% xlabel('Time [s]'); ylabel('Force [N]');
+% legend('Instantaneous Force', 'Ice Breaking Event', 'Location', 'best');
+% grid on;
+% 
+% subplot(2,1,2);
+% plot(time_arr, F_history.motor_torque, 'b-', 'LineWidth', 1.5); 
+% title('Motor Driving Torque (Z-axis)'); 
+% xlabel('Time [s]'); ylabel('Torque [N·m]');
+% grid on;
 clc; clear all; close all;
 
 % 路径设置
@@ -53,13 +337,13 @@ softRobot.undef_refTwist = computeRefTwist_bend_twist_spring(bend_twist_springs,
 softRobot.refTwist = computeRefTwist_bend_twist_spring(bend_twist_springs, softRobot.a1, softRobot.tangent, softRobot.undef_refTwist);
 
 % 边界条件
-% n_nodes_per_rod = 13; 
-% fixed_node_indices = [1, n_nodes_per_rod + 1]; 
 softRobot.fixed_nodes = fixed_node_indices; 
 softRobot.fixed_edges = [];
 
 [softRobot.fixedDOF, softRobot.freeDOF] = FindFixedFreeDOF(softRobot.fixed_nodes, softRobot.fixed_edges, softRobot.n_DOF, softRobot.n_nodes);
 
+%% ==========================================
+%% 2. 物理仿真循环 (Run Simulation)
 %% ==========================================
 %% 2. 物理仿真循环 (Run Simulation)
 %% ==========================================
@@ -76,15 +360,24 @@ dof_with_time(1,:) = time_arr;
 F_history = struct('stretch', zeros(Nsteps,1), 'bend', zeros(Nsteps,1), ...
                    'twist', zeros(Nsteps,1), 'cent', zeros(Nsteps,1), ...
                    'coriolis', zeros(Nsteps,1), 'contact', zeros(Nsteps,1), ...
-                   'motor_torque', zeros(Nsteps,1)); % <--- 新增这一个字段
+                   'motor_torque', zeros(Nsteps,1), ...
+                   'motor_omega', zeros(Nsteps,1), ...
+                   'motor_power', zeros(Nsteps,1)); 
 
 fprintf('开始物理仿真 (共 %d 步)...\n', Nsteps);
 
 % --- [循环前初始化] ---
-breaking_event_data = struct('time', NaN, 'force', 0, 'z_pos', NaN);
-has_captured_break = false;
-break_times = inf(1, env.contact_params.num_ice); % 记录每根冰柱的断裂时间
+break_times = inf(1, imc.num_ice); % 记录每根冰柱的断裂时间
+
+% 记录上一时刻的峰值力和碰撞位置
+previous_peak_forces = zeros(1, imc.num_ice); 
+collision_dists = zeros(1, imc.num_ice); 
+
+% 【新增】定义冰柱出现的“稳定时间”，设定为马达加速时间加上一点缓冲（例如 0.5s 加速 + 0.1s 稳定）
+t_stable = sim_params.ramp_time + 0.1; 
+
 for timeStep = 1:Nsteps
+    % 1. 马达转速控制
     if ctime < sim_params.ramp_time
         ratio = ctime / sim_params.ramp_time;
         current_omega_mag = ratio * sim_params.omega_target;
@@ -92,85 +385,232 @@ for timeStep = 1:Nsteps
         current_omega_mag = sim_params.omega_target;
     end
     
-    % 2. 统一更新所有结构体中的转速参数
-    sim_params.omega = [0; 0; current_omega_mag]; % 供离心力、空气阻力使用
-    imc.omega_mag = current_omega_mag;            % 供 IceContact 速度项使用
-    
-    % 3. [关键] 精确积分计算当前冰柱的角度位置
-    % 角度 = 上一步角度 + 当前转速 * 时间步长
+    sim_params.omega = [0; 0; current_omega_mag]; 
+    imc.omega_mag = current_omega_mag;            
     imc.theta_accumulated = imc.theta_accumulated + current_omega_mag * sim_params.dt;
     
-    % 4. 调用时间步进器
     if(sim_params.use_midedge), tau_0 = updatePreComp_without_sign(softRobot.q, softRobot); else, tau_0 = []; end
     
+    % 2. 核心物理步进计算
     [softRobot, stretch_springs, bend_twist_springs, hinge_springs, force_now, imc] = ...
         timeStepper(softRobot, stretch_springs, bend_twist_springs, hinge_springs, ...
         triangle_springs, tau_0, environment, imc, sim_params, ctime);
-    % ================= [多冰柱阵列：断裂事件捕获] =================
+
+    % ========================================================
+    % 【新增核心逻辑】延时触发机制：在绳索稳定前，强制屏蔽接触力
+    % ========================================================
+    if ctime < t_stable
+        imc.peak_force(:) = 0;        % 强制重置底层记录的接触峰值
+        imc.is_broken(:) = false;     % 强制防止冰柱被早期刮擦判定为断裂
+        if isfield(force_now, 'contact')
+            force_now.contact(:) = 0; % 强制接触力数组归零
+        end
+    end
+
+    % 3. 追踪峰值接触力与碰撞位置
+    is_colliding_now = imc.peak_force > previous_peak_forces;
+    actual_peak_force_this_step = sum(imc.peak_force(is_colliding_now));
+    
+    if any(is_colliding_now) && isfield(force_now, 'contact')
+        contact_forces_vec = reshape(force_now.contact(1:3*softRobot.n_nodes), 3, []);
+        node_contact_mags = vecnorm(contact_forces_vec);
+        [~, max_node] = max(node_contact_mags);
+        
+        nodes_pos = reshape(softRobot.q(1:3*softRobot.n_nodes), 3, []);
+        hit_z = abs(nodes_pos(3, max_node)); 
+        collision_dists(is_colliding_now) = hit_z;
+    end
+    
+    previous_peak_forces = imc.peak_force; 
+
+    % 4. 断裂事件捕获
     if any(imc.is_broken)
-        % 找出这一帧新断裂的冰柱
         newly_broken = imc.is_broken & isinf(break_times);
         if any(newly_broken)
             broken_indices = find(newly_broken);
             for idx = broken_indices
                 break_times(idx) = ctime;
-                fprintf('>>> 冰柱 #%d 断裂! 时刻: %.4fs | 峰值力: %.1fN\n', ...
-                    idx, ctime, imc.peak_force(idx));
+                fprintf('>>> 冰柱 #%02d 断裂! 时刻: %.4fs | 峰值力: %6.1f N | 距根部距离: %.3f m\n', ...
+                    idx, ctime, imc.peak_force(idx), collision_dists(idx));
             end
         end
     end
-    % --- 3. 数据记录修正 ---
-    % 【修正】记录所有节点的接触力总和，而不仅仅是末端节点
+
+    % 5. 接触力与扭矩记录
     if isfield(force_now, 'contact')
-        % 将力向量 reshape 为 [3 x n_nodes]，计算每列的模，再求和
         contact_forces_vec = reshape(force_now.contact(1:3*softRobot.n_nodes), 3, []);
         total_contact_force = sum(vecnorm(contact_forces_vec));
-        F_history.contact(timeStep) = total_contact_force;
+        
+        F_history.contact(timeStep) = max(total_contact_force, actual_peak_force_this_step);
 
-        % === [新增] 计算马达驱动扭矩 (Motor Torque about Z-axis) ===
-        % 阻碍旋转的力包括：空气阻力 (drag)、科氏力 (coriolis)、接触摩擦力 (contact)
         F_resistive = force_now.drag + force_now.coriolis + force_now.contact; 
         F_res_vec = reshape(F_resistive(1:3*softRobot.n_nodes), 3, []);
         
-        % 提取当前所有节点的坐标 (x, y)
         nodes_pos = reshape(softRobot.q(1:3*softRobot.n_nodes), 3, []);
         X = nodes_pos(1, :);
         Y = nodes_pos(2, :);
-        
-        % 提取阻力在 X 和 Y 方向的分量
         Fx = F_res_vec(1, :);
         Fy = F_res_vec(2, :);
         
-        % 扭矩 = r x F，关于 Z 轴的扭矩 Mz = X * Fy - Y * Fx
-        % 马达需要提供的扭矩与阻力扭矩大小相等、方向相反
         node_torques_z = X .* Fy - Y .* Fx;
         F_history.motor_torque(timeStep) = abs(sum(node_torques_z)); 
-        % ==========================================================
     end
+    
+    % 6. 记录马达转速与计算功率
+    F_history.motor_omega(timeStep) = current_omega_mag;
+    F_history.motor_power(timeStep) = F_history.motor_torque(timeStep) * current_omega_mag;
     
     ctime = ctime + sim_params.dt;
     softRobot.q0 = softRobot.q; 
     
     if sim_params.log_data && mod(timeStep, sim_params.logStep) == 0
         dof_with_time(2:end,timeStep) = softRobot.q;
-        fprintf('进度: %.1f%% | 接触力总和: %.2e N\n', (timeStep/Nsteps)*100, F_history.contact(timeStep));
+        % fprintf('进度: %5.1f%% | 接触力总和: %6.2f N\n', (timeStep/Nsteps)*100, F_history.contact(timeStep));
     end
 end
-% --- [循环结束后打印结果] ---
-% --- [循环结束后打印结果] ---
+% %% ==========================================
+% Nsteps = round(sim_params.totalTime/sim_params.dt);
+% ctime = 0; 
+% time_arr = linspace(0, sim_params.totalTime, Nsteps);
+% sim_params.log_data = true; 
+% sim_params.logStep = 10;   
+% 
+% dof_with_time = zeros(softRobot.n_DOF+1, Nsteps);
+% dof_with_time(1,:) = time_arr;
+% 
+% % 【新增】力和扭矩记录初始化（加入 omega 和 power）
+% F_history = struct('stretch', zeros(Nsteps,1), 'bend', zeros(Nsteps,1), ...
+%                    'twist', zeros(Nsteps,1), 'cent', zeros(Nsteps,1), ...
+%                    'coriolis', zeros(Nsteps,1), 'contact', zeros(Nsteps,1), ...
+%                    'motor_torque', zeros(Nsteps,1), ...
+%                    'motor_omega', zeros(Nsteps,1), ...
+%                    'motor_power', zeros(Nsteps,1)); 
+% 
+% fprintf('开始物理仿真 (共 %d 步)...\n', Nsteps);
+% 
+% % --- [循环前初始化] ---
+% breaking_event_data = struct('time', NaN, 'force', 0, 'z_pos', NaN);
+% has_captured_break = false;
+% break_times = inf(1, imc.num_ice); % 记录每根冰柱的断裂时间
+% 
+% % 记录上一时刻的峰值力和碰撞位置
+% previous_peak_forces = zeros(1, imc.num_ice); 
+% collision_dists = zeros(1, imc.num_ice); 
+% 
+% for timeStep = 1:Nsteps
+%     if ctime < sim_params.ramp_time
+%         ratio = ctime / sim_params.ramp_time;
+%         current_omega_mag = ratio * sim_params.omega_target;
+%     else
+%         current_omega_mag = sim_params.omega_target;
+%     end
+% 
+%     sim_params.omega = [0; 0; current_omega_mag]; 
+%     imc.omega_mag = current_omega_mag;            
+%     imc.theta_accumulated = imc.theta_accumulated + current_omega_mag * sim_params.dt;
+% 
+%     if(sim_params.use_midedge), tau_0 = updatePreComp_without_sign(softRobot.q, softRobot); else, tau_0 = []; end
+% 
+%     [softRobot, stretch_springs, bend_twist_springs, hinge_springs, force_now, imc] = ...
+%         timeStepper(softRobot, stretch_springs, bend_twist_springs, hinge_springs, ...
+%         triangle_springs, tau_0, environment, imc, sim_params, ctime);
+% 
+%     % === 追踪峰值接触力与碰撞位置 ===
+%     is_colliding_now = imc.peak_force > previous_peak_forces;
+%     actual_peak_force_this_step = sum(imc.peak_force(is_colliding_now));
+% 
+%     % 计算碰撞点到冰柱根部的距离
+%     if any(is_colliding_now) && isfield(force_now, 'contact')
+%         contact_forces_vec = reshape(force_now.contact(1:3*softRobot.n_nodes), 3, []);
+%         node_contact_mags = vecnorm(contact_forces_vec);
+%         [~, max_node] = max(node_contact_mags);
+% 
+%         nodes_pos = reshape(softRobot.q(1:3*softRobot.n_nodes), 3, []);
+%         hit_z = abs(nodes_pos(3, max_node)); % 提取碰撞点的 Z 轴高度作为根部距离
+% 
+%         collision_dists(is_colliding_now) = hit_z;
+%     end
+% 
+%     previous_peak_forces = imc.peak_force; 
+% 
+%     % ================= [多冰柱阵列：断裂事件捕获] =================
+%     if any(imc.is_broken)
+%         newly_broken = imc.is_broken & isinf(break_times);
+%         if any(newly_broken)
+%             broken_indices = find(newly_broken);
+%             for idx = broken_indices
+%                 break_times(idx) = ctime;
+%                 fprintf('>>> 冰柱 #%02d 断裂! 时刻: %.4fs | 峰值力: %6.1f N | 距根部距离: %.3f m\n', ...
+%                     idx, ctime, imc.peak_force(idx), collision_dists(idx));
+%             end
+%         end
+%     end
+% 
+%     % --- 数据与马达性能记录 ---
+%     if isfield(force_now, 'contact')
+%         contact_forces_vec = reshape(force_now.contact(1:3*softRobot.n_nodes), 3, []);
+%         total_contact_force = sum(vecnorm(contact_forces_vec));
+% 
+%         F_history.contact(timeStep) = max(total_contact_force, actual_peak_force_this_step);
+% 
+%         % === 计算马达驱动扭矩 (Motor Torque about Z-axis) ===
+%         F_resistive = force_now.drag + force_now.coriolis + force_now.contact; 
+%         F_res_vec = reshape(F_resistive(1:3*softRobot.n_nodes), 3, []);
+% 
+%         nodes_pos = reshape(softRobot.q(1:3*softRobot.n_nodes), 3, []);
+%         X = nodes_pos(1, :);
+%         Y = nodes_pos(2, :);
+% 
+%         Fx = F_res_vec(1, :);
+%         Fy = F_res_vec(2, :);
+% 
+%         node_torques_z = X .* Fy - Y .* Fx;
+%         F_history.motor_torque(timeStep) = abs(sum(node_torques_z)); 
+%     end
+% 
+%     % 【新增】记录马达转速与计算功率
+%     F_history.motor_omega(timeStep) = current_omega_mag;
+%     F_history.motor_power(timeStep) = F_history.motor_torque(timeStep) * current_omega_mag;
+% 
+%     ctime = ctime + sim_params.dt;
+%     softRobot.q0 = softRobot.q; 
+% 
+%     if sim_params.log_data && mod(timeStep, sim_params.logStep) == 0
+%         dof_with_time(2:end,timeStep) = softRobot.q;
+%         fprintf('进度: %5.1f%% | 接触力总和: %6.2f N\n', (timeStep/Nsteps)*100, F_history.contact(timeStep));
+%     end
+% end
+
+% --- [循环结束后打印最终统计结果] ---
 fprintf('\n====== 仿真分析结果 (自转速度: %d rad/s) ======\n', imc.omega_spin);
 broken_count = sum(imc.is_broken);
 fprintf('共计击碎冰柱: %d / %d\n', broken_count, imc.num_ice);
 for j = 1:imc.num_ice
     if imc.is_broken(j)
-        fprintf('  - 冰柱 #%d: 断裂时刻 %.4fs | 峰值力: %.2f N\n', j, break_times(j), imc.peak_force(j));
+        fprintf('  - 冰柱 #%02d: 断裂时刻 %.4fs | 峰值力: %6.2f N | 碰撞点距根部: %.3f m\n', ...
+            j, break_times(j), imc.peak_force(j), collision_dists(j));
     else
-        fprintf('  - 冰柱 #%d: 完好\n', j);
+        if imc.peak_force(j) > 0
+            fprintf('  - 冰柱 #%02d: 完好(受冲击)  | 碰撞峰值力: %6.2f N | 碰撞点距根部: %.3f m\n', ...
+                j, imc.peak_force(j), collision_dists(j));
+        else
+            fprintf('  - 冰柱 #%02d: 完好(未碰撞)  | 受力: 0.00 N\n', j);
+        end
     end
 end
 fprintf('除冰率: %.1f%%\n', (broken_count/imc.num_ice)*100);
+
+% 【新增】马达性能数据统计打印
+fprintf('\n====== 气动马达驱动性能校核 ======\n');
+energy_consumption = trapz(time_arr, F_history.motor_power);
+peak_torque = max(F_history.motor_torque);
+peak_power = max(F_history.motor_power);
+fprintf('总除冰作业能耗估计: %.2f J\n', energy_consumption);
+fprintf('马达输出峰值扭矩: %.2f N·m\n', peak_torque);
+fprintf('马达瞬态峰值功率: %.2f W\n', peak_power);
 fprintf('==========================\n');
-%% 3. 动画生成 (Post-Processing) - 修正版
+
+%% 3. 动画生成 (Post-Processing) 
 %% ==========================================
 fprintf('仿真完成，开始生成动画视频...\n');
 videoFileName = 'Deicing_Spin_Fixed.mp4';
@@ -179,41 +619,32 @@ v.FrameRate = 30;
 open(v);
 
 h_fig = figure('Renderer', 'opengl', 'Color', 'w'); 
-set(h_fig, 'Position', [100, 100, 1024, 768]); % 设置固定的窗口大小
+set(h_fig, 'Position', [100, 100, 1024, 768]); 
 
-% 定义固定的坐标轴范围 (根据你的场景大小调整)
-% 考虑到冰柱距离中心 0.15m，绳子甩起来可能到 0.2m+
 plot_limit = 0.3; 
 x_lims = [-plot_limit, plot_limit];
 y_lims = [-plot_limit, plot_limit];
-z_lims = [-0.1, 0.4]; % Z轴通常需要根据绳子高度调整
+z_lims = [-0.1, 0.4]; 
 
-% 【修复】VideoWriter 在写入第一帧之前通常不知道分辨率（v.Height/v.Width 可能是 []）。
-% 用第一帧的尺寸作为“目标分辨率”，后续统一缩放即可避免 || 标量逻辑报错和尺寸不一致报错。
-targetH = [];  % 目标帧高（像素）
-targetW = [];  % 目标帧宽（像素）
+targetH = [];  
+targetW = [];  
 
 for k = sim_params.logStep : sim_params.logStep : Nsteps
     t_frame = dof_with_time(1, k);
     q_frame = dof_with_time(2:end, k);
-    
-    % 跳过全零帧
+
     if norm(q_frame) == 0, continue; end
-    
+
     softRobot.q = q_frame; 
-    
-    figure(h_fig); % 激活当前窗口
-    
-    % 1. 调用绘图
-    % 注意：plot_MultiRod 内部有 clf，会清除上一帧，这很好
-    % 放在调用 plot_MultiRod 之前
+    figure(h_fig); 
+
     if t_frame < sim_params.ramp_time
         imc.theta_accumulated = 0.5 * (sim_params.omega_target / sim_params.ramp_time) * (t_frame^2);
     else
         theta_ramp = 0.5 * sim_params.omega_target * sim_params.ramp_time;
         imc.theta_accumulated = theta_ramp + sim_params.omega_target * (t_frame - sim_params.ramp_time);
     end
-    % === 【核心修复】：动态重构当前帧的冰柱断裂状态 ===
+
     imc.is_broken = (t_frame >= break_times);
     try
         plot_MultiRod(softRobot, t_frame, sim_params, environment, imc);
@@ -221,69 +652,91 @@ for k = sim_params.logStep : sim_params.logStep : Nsteps
         warning('绘图出错: %s', ME.message);
         clf; plot_MultiRod(softRobot, t_frame, sim_params, environment, imc);
     end
-    
-% 2. 【关键修改】彻底锁死坐标轴和相机视角 (杜绝一切画面缩放和抖动)
-    % 必须在 plot_MultiRod 之后执行，覆盖它的默认设置
-    xlim(x_lims);     
-    ylim(y_lims);     
-    zlim(z_lims);     
-    axis equal;       
-    view(3);          
-    grid on;
 
-    % 获取当前坐标轴句柄
+    xlim(x_lims); ylim(y_lims); zlim(z_lims);     
+    axis equal; view(3); grid on;
+
     ax = gca;
-    % 锁死数据范围
-    ax.XLimMode = 'manual';
-    ax.YLimMode = 'manual';
-    ax.ZLimMode = 'manual';
-    % 锁死长宽比例
-    ax.DataAspectRatioMode = 'manual';
-    ax.PlotBoxAspectRatioMode = 'manual';
-    % 锁死相机的距离、目标点和视野角度 (解决画面忽大忽小的根本方法)
-    ax.CameraPositionMode = 'manual';
-    ax.CameraTargetMode = 'manual';
-    ax.CameraViewAngleMode = 'manual';
+    ax.XLimMode = 'manual'; ax.YLimMode = 'manual'; ax.ZLimMode = 'manual';
+    ax.DataAspectRatioMode = 'manual'; ax.PlotBoxAspectRatioMode = 'manual';
+    ax.CameraPositionMode = 'manual'; ax.CameraTargetMode = 'manual'; ax.CameraViewAngleMode = 'manual';
 
-    % 3. 更新标题
     current_force = 0;
     if k <= length(F_history.contact)
         current_force = F_history.contact(k);
     end
     title(sprintf('Time: %.3fs | Force: %.1f N', t_frame, current_force));
-    
-        % 4. 写入视频
-        frame = getframe(h_fig); % 用固定句柄，避免抓到别的窗口
 
-        % --- [修复：统一每帧分辨率] ---
-        if isempty(targetH)
-            targetH = size(frame.cdata, 1);
-            targetW = size(frame.cdata, 2);
-        end
-        % 注意：这里必须保证 if 条件是“标量逻辑”，因此用 isequal 得到标量 true/false
-        if ~isequal(size(frame.cdata, 1), targetH) || ~isequal(size(frame.cdata, 2), targetW)
-            frame.cdata = imresize(frame.cdata, [targetH, targetW]);
-        end
-        % ---------------------------------------
-
-        writeVideo(v, frame);
+    frame = getframe(h_fig); 
+    if isempty(targetH)
+        targetH = size(frame.cdata, 1);
+        targetW = size(frame.cdata, 2);
+    end
+    if ~isequal(size(frame.cdata, 1), targetH) || ~isequal(size(frame.cdata, 2), targetW)
+        frame.cdata = imresize(frame.cdata, [targetH, targetW]);
+    end
+    writeVideo(v, frame);
 end
 
 close(v);
 fprintf('动画已保存: %s\n', videoFileName);
 
-% 绘制力曲线 (建议单独画一个清晰的图)
-% 绘制总接触力曲线
-figure; 
-subplot(2,1,1);
-plot(time_arr, F_history.contact, 'r-', 'LineWidth', 1.5); 
-title('Total Contact Force (Sampled)'); 
-xlabel('Time [s]'); ylabel('Force [N]');
-grid on;
+%% ==========================================
+%% 4. 绘制马达性能综合评估曲线
+%% ==========================================
+% 构建 4 个子图面板，全面分析除冰过程中的动力学
+figure('Name', '气动马达除冰性能评估', 'Position', [150, 50, 900, 1000]); 
 
-% 绘制马达扭矩曲线
-subplot(2,1,2);
-plot(time_arr, F_history.motor_torque, 'b-', 'LineWidth', 1.5); 
-title('Motor Driving Torque (Z-axis)'); 
-xlabel('Time [s]'); ylabel('Torque [N·m]');
+% 设置全局中文字体防止乱码（推荐使用微软雅黑或黑体）
+cn_font = 'Microsoft YaHei'; 
+
+% 子图1：冰层接触力与断裂点标记
+subplot(4,1,1);
+plot(time_arr, F_history.contact, 'r-', 'LineWidth', 1.5); 
+hold on;
+valid_breaks = isfinite(break_times);
+scatter(break_times(valid_breaks), imc.peak_force(valid_breaks), 60, 'k', 'p', 'filled');
+title('瞬态接触力与冰柱断裂', 'FontName', cn_font); 
+xlabel('时间 [s]', 'FontName', cn_font); ylabel('力 [N]', 'FontName', cn_font);
+legend('接触力', '冰柱断裂', 'Location', 'best', 'FontName', cn_font);
 grid on;
+set(gca, 'FontName', cn_font); % 设置坐标轴刻度字体
+
+% 子图2：转速曲线 (马达启动响应)
+subplot(4,1,2);
+plot(time_arr, F_history.motor_omega, 'b-', 'LineWidth', 1.5);
+hold on;
+yline(sim_params.omega_target, 'k--', '目标转速', 'FontName', cn_font);
+title('马达转速响应 (\omega)', 'FontName', cn_font); 
+xlabel('时间 [s]', 'FontName', cn_font); ylabel('转速 [rad/s]', 'FontName', cn_font);
+grid on;
+set(gca, 'FontName', cn_font);
+
+% 子图3：驱动扭矩曲线 (冲击载荷校核)
+subplot(4,1,3);
+plot(time_arr, F_history.motor_torque, 'm-', 'LineWidth', 1.5); 
+hold on;
+% 标出峰值扭矩点
+[max_torque, idx_t] = max(F_history.motor_torque);
+plot(time_arr(idx_t), max_torque, 'mo', 'MarkerSize', 8, 'MarkerFaceColor', 'm');
+title('马达驱动扭矩', 'FontName', cn_font); 
+xlabel('时间 [s]', 'FontName', cn_font); ylabel('扭矩 [N·m]', 'FontName', cn_font);
+legend('输出扭矩', sprintf('峰值: %.2f N·m', max_torque), 'Location', 'best', 'FontName', cn_font);
+grid on;
+set(gca, 'FontName', cn_font);
+
+% 子图4：动态功率消耗 (供气选型依据)
+subplot(4,1,4);
+plot(time_arr, F_history.motor_power, 'g-', 'LineWidth', 1.5);
+hold on;
+% 标出峰值功率点
+[max_power, idx_p] = max(F_history.motor_power);
+plot(time_arr(idx_p), max_power, 'go', 'MarkerSize', 8, 'MarkerFaceColor', 'g');
+title(sprintf('马达输出功率 (总消耗能量: %.2f J)', energy_consumption), 'FontName', cn_font); 
+xlabel('时间 [s]', 'FontName', cn_font); ylabel('功率 [W]', 'FontName', cn_font);
+legend('输出功率', sprintf('峰值: %.2f W', max_power), 'Location', 'best', 'FontName', cn_font);
+grid on;
+set(gca, 'FontName', cn_font);
+
+% 整体排版调整：添加总标题
+sgtitle('气动马达性能与除冰动力学评估', 'FontWeight', 'bold', 'FontSize', 14, 'FontName', cn_font);
