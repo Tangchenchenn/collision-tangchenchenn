@@ -107,12 +107,20 @@ function [Fc, Jc, Ffr, Jfr, imc] = IceContact(imc, q, q0, rod_edges, iter, dt, c
             dist = norm(diff);
             
             if dist < contact_dist_limit
+                % === 【修改代码：提前计算接触点 Z 坐标并拦截】 ===
+                z_b = p1(3) + b * (p2(3) - p1(3)); % 计算接触点在 Z 轴的高度
+                
+                % 检查：如果接触点的高度不在冰柱的实体范围内，则视为“挥空”，跳过不产生力
+                if z_b < imc.ice_z_min || z_b > imc.ice_z_max
+                    continue; 
+                end
+                % ==================================================
+
                 if dist < 1e-9, normal = [1;0;0]; else, normal_xy = diff / dist; normal = [normal_xy; 0]; end
                 pen_depth = contact_dist_limit - dist;
                 f_mag = k_c * pen_depth; 
                 
                 % 断裂判据：使用接触点的插值 Z 坐标计算力臂
-                z_b = p1(3) + b * (p2(3) - p1(3));
                 lever_arm = abs(z_root - z_b); 
                 safe_lever = max(lever_arm, 0.001);
                 F_break = (sigma_t * I_ice) / (c_ice * safe_lever);
