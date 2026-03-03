@@ -90,7 +90,7 @@ env.contact_params.compute_friction = true;
 env.contact_params.active_time = 0.8;
 % ==============================
 env.contact_params.sigma_t = 1.5e6;  
-env.contact_params.z_root = 0.07;     
+env.contact_params.z_root = 0.02;     
 env.contact_params.rod_radius = geom.rod_r0;
 
 % [修改] 将断裂状态和峰值力记录改为数组，每根冰柱独立记录
@@ -98,7 +98,7 @@ env.contact_params.is_broken = false(1, env.contact_params.num_ice);
 env.contact_params.peak_force = zeros(1, env.contact_params.num_ice); 
 % =============================================
 %% 边界条件
-fixed_node_indices = [1, 14]; % 同时固定两根绳子的根部节点
+fixed_node_indices = [1, 18]; % 同时固定两根绳子的根部节点
 input_log_node = size(nodes, 1);
 
 
