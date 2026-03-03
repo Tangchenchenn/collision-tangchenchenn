@@ -77,22 +77,30 @@ env.Cd = 1.0; % 阻力系数
 env.rho = 1.225; % 空气密度 (kg/m^3)
 % ==============================
 % 冰柱几何与运动参数（圆周阵列配置）
-env.contact_params.ice_radius = 0.01;       % 单根冰柱半径 (10mm)
+env.contact_params.ice_radius = 0.007;       % 单根冰柱半径 (10mm)
 env.contact_params.num_ice = 40;             % [修改] 冰柱数量 m=10
 env.contact_params.array_radius = 0.145;       % [新增] 圆周的半径 R=0.1
 % [修改] 圆周的圆心距除冰绳旋转中心距离 = 0.1 + 0.15 = 0.25
 env.contact_params.array_center_dist = env.contact_params.array_radius + 0.18; 
 
 env.contact_params.omega_mag = sim_params.omega_target; % 公转角速度
-env.contact_params.omega_spin = 1;         % [新增] 冰柱自转角速度(rad/s) -> 后续改这个值作对比分析
+env.contact_params.omega_spin = 1.5;         % [新增] 冰柱自转角速度(rad/s) -> 后续改这个值作对比分析
 
 env.contact_params.compute_friction = true; 
 env.contact_params.active_time = 0.8;
 % ==============================
 env.contact_params.sigma_t = 1.5e6;  
 env.contact_params.z_root = 0.02;     
+% === 【新增代码：定义冰柱的长度和上下边界】 ===
+env.contact_params.ice_length = 0.040; % 定义冰柱长度为 40mm (0.04m)
+% 假设冰柱从根部(z_root)向下生长（悬挂状态）：
+env.contact_params.ice_z_min = env.contact_params.z_root - env.contact_params.ice_length; 
+env.contact_params.ice_z_max = env.contact_params.z_root; 
+% ==============================================
 env.contact_params.rod_radius = geom.rod_r0;
 
+% === 【新增代码：定义冰柱的长度和上下边界】 ===
+env.contact_params.ice_length = 0.040; % 定义冰柱长度为 40mm (0.04m)
 % [修改] 将断裂状态和峰值力记录改为数组，每根冰柱独立记录
 env.contact_params.is_broken = false(1, env.contact_params.num_ice); 
 env.contact_params.peak_force = zeros(1, env.contact_params.num_ice); 
