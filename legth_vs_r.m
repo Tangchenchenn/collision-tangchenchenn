@@ -2,7 +2,7 @@
 % 目的：扫描不同轮毂半径，保持 L_rope : R_hub = 5:1
 %       观察绳子在1000 rpm旋转下的稳定扫掠半径
 
-clc; clear all; close all;
+clc; clearvars; close all; % 使用 clearvars 避免性能下降
 
 projectRoot = fileparts(mfilename('fullpath')); 
 cd(projectRoot);
@@ -13,42 +13,46 @@ RPM_target     = 1000;
 omega_target   = RPM_target * 2 * pi / 60;     % rad/s
 
 ratio_L_R      = 5;
-% R_hub_list     = [0.032,0.034,0.036,0.038,0.040,0.042,0.044];
-R_hub_list     = [0.040,0.042,0.044,0.046,0.048,0.5];
+% 【修复笔误】将 0.5 改为了 0.050
+R_hub_list     = [0.010, 0.060];
 n_cases        = length(R_hub_list);
 
 stable_radius  = nan(n_cases,1);
-tip_radius_std = nan(n_cases,1);               % 稳定阶段波动幅度
+tip_radius_std = nan(n_cases,1);               
 
-%% 2. 公共仿真参数
-sim_params.totalTime   = 2.0;
-sim_params.dt          = 5e-4;
-sim_params.tol         = 5e-4;
-sim_params.maximum_iter= 25;
-sim_params.log_data    = true;
-sim_params.logStep     = 20;
-sim_params.ramp_time   = 0.3;
-sim_params.omega_target= omega_target;
-
-env.ext_force_list     = ["gravity", "viscous", "aerodynamic", "centrifugal", "coriolis"];
-env.eta                = 0.05;
-
-% 关闭接触
-env.selfContact        = false;
-env.floorContact       = false;
-
-%% 3. 批量模拟
+%% 2. 批量模拟
 for ic = 1:n_cases
 
     R_hub = R_hub_list(ic);
     fprintf('\n=== 案例 %2d / %2d   R_hub = %.4f m ===\n', ic, n_cases, R_hub);
 
-    % 设置轮毂半径并加载描述文件
+    % 设置轮毂半径
     geom.hub_radius = R_hub;
-    robot2DescriptionDeicing;           % ← 调用修改后的描述文件
+    
+    % 先加载底层配置文件 (这会载入默认的材料、几何结构)
+    robot2DescriptionDeicing;           
+
+    % 【核心修复：在配置文件加载后，再强制覆盖我们这个特定实验需要的参数】
+    sim_params.totalTime   = 1.5;   % 只需2秒即可达到稳定
+    sim_params.dt          = 1e-4;  % 适当放大步长加快扫描速度
+    sim_params.tol         = 5e-4;
+    sim_params.maximum_iter= 25;
+    sim_params.log_data    = true;
+    sim_params.logStep     = 20;
+    sim_params.ramp_time   = 0.3;
+    sim_params.omega_target= omega_target;
+
+    env.ext_force_list     = ["gravity", "viscous", "aerodynamic", "centrifugal", "coriolis"];
+    env.eta                = 0.05;
+
+    % 确保严格关闭接触引擎
+    env.selfContact        = false;
+    env.floorContact       = false;
 
     % 保存初始节点
     nodes_original = nodes;
+    
+    % ...... 下面的 [nodes, edges, rod_edges...] 等创建几何对象的代码保持不变 ......
 
     % 创建几何对象、弹簧等
     [nodes, edges, rod_edges, shell_edges, rod_shell_joint_edges, rod_shell_joint_total_edges, ...

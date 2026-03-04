@@ -9,43 +9,49 @@ addpath(genpath(projectRoot));
 total_length = 0.262; % 单侧绳子长度 + 轮毂半径 = 0.262m
 ratios = 9:-1:1;      % 刚柔比 (绳长 : 轮毂半径) 9:1 到 1:1
 num_cases = length(ratios);
-sim_params.stable_time = 1.5;          % 稳定运行 1.5 秒后再激活冰柱
-% 网格控制参数：固定每段的物理长度，而不是固定总节点数
+
+% === 【核心修复1：时间参数修正】 ===
+% 修复原代码中 totalTime < stable_time 导致接触永远不触发的Bug
+sim_params.ramp_time = 0.5;            % 马达加速时间
+sim_params.stable_time = 0.8;          % 稳定运行 0.8 秒后再激活冰柱
+sim_params.totalTime = 5;            % 仿真总时长 1.5 秒 (留出 0.7s 的接触时间)
+% ====================================
+
+% 网格控制参数
 target_l_bar = 0.015; % 目标网格单元长度约为 1.5 cm
 
-% 结果记录数组
-res_peak_torque = zeros(num_cases, 1);
-res_peak_stress = zeros(num_cases, 1); 
-res_peak_force  = zeros(num_cases, 1);
-res_is_broken   = false(num_cases, 1);
-break_threshold = 58.9; % 击碎阈值 (N)
+% === 【核心修复2：评估指标修改为 RMS 扭矩与击碎率】 ===
+num_ice_total = 43;          % 环形阵列的冰柱总数
+target_break_rate = 0.9;     % 目标击碎率：必须击碎至少 80% 的冰柱才算达标
+
+res_rms_torque  = zeros(num_cases, 1); % 替换原来的峰值扭矩
+res_peak_stress = zeros(num_cases, 1); % 根部最大应力（弯曲疲劳考察）
+res_break_rate  = zeros(num_cases, 1); % 击碎率
+res_is_valid    = false(num_cases, 1); % 是否满足目标击碎率硬约束
+% ======================================================
 
 fprintf('==================================================\n');
-fprintf('开始刚柔比自动寻优，共 %d 组参数...\n', num_cases);
+fprintf('开始刚柔比自动寻优(环形阵列 + RMS均方根评估)，共 %d 组...\n', num_cases);
 fprintf('==================================================\n');
 
 %% 2. 遍历每一个刚柔比进行仿真
 for idx = 1:num_cases
     ratio = ratios(idx);
 
-    % 计算当前的轮毂半径和绳子长度
     R_hub = total_length / (ratio + 1);
     L_rope = total_length - R_hub;
 
-    % 动态计算节点数量，确保网格密度(l_bar)基本一致
     n_nodes_per_rod = max(5, round(L_rope / target_l_bar) + 1); 
-    l_bar = L_rope / (n_nodes_per_rod - 1); % 重新计算真实的等分长度
+    l_bar = L_rope / (n_nodes_per_rod - 1); 
 
     fprintf('\n[Case %d/%d] 刚柔比 %d:1 | 轮毂: %.3fm | 绳长: %.3fm | 节点数: %d\n', ...
         idx, num_cases, ratio, R_hub, L_rope, n_nodes_per_rod);
 
     % --------------------------------------------------------
-    % 2.1 动态生成几何数据
+    % 2.1 动态生成几何数据 (微小初始弯曲)
     % --------------------------------------------------------
     nodes1 = zeros(n_nodes_per_rod, 3);
     nodes1(1, :) = [R_hub, 0, 0]; 
-
-    % 生成具有微小初始弯曲的绳索形状（更容易启动旋转）
     for k = 2:n_nodes_per_rod
         sum_val = [0, 0, 0];
         for i = 0:(k-2)
@@ -55,15 +61,14 @@ for idx = 1:num_cases
         end
         nodes1(k, :) = nodes1(1, :) + sum_val;
     end
-
-    nodes2 = -nodes1; % 第二根绳子对称
+    nodes2 = -nodes1; 
     nodes = [nodes1; nodes2];
 
     edges1 = [(1:n_nodes_per_rod-1)', (2:n_nodes_per_rod)'];
     edges2 = [(n_nodes_per_rod+1:2*n_nodes_per_rod-1)', (n_nodes_per_rod+2:2*n_nodes_per_rod)'];
     edges = [edges1; edges2];
     face_nodes = [];
-    fixed_node_indices = [1, n_nodes_per_rod + 1]; % 动态获取根部节点索引
+    fixed_node_indices = [1, n_nodes_per_rod + 1]; 
 
     % --------------------------------------------------------
     % 2.2 配置物理与环境参数
@@ -74,15 +79,12 @@ for idx = 1:num_cases
     sim_params.use_midedge = false;
     sim_params.showFrames = false;
 
-    sim_params.ramp_time = 0.5;
     RPM_target = 1000;
     sim_params.omega_target = (RPM_target * 2 * pi) / 60;
     sim_params.omega = [0; 0; 0];
     sim_params.hub_radius = R_hub; 
 
-    % 补全容差参数以修复 timeStepper 报错
     sim_params.dt = 1e-4; 
-    sim_params.totalTime = 1.0; 
     sim_params.tol = 1e-3;
     sim_params.ftol = 1e-3; 
     sim_params.dtol = 0.01;  
@@ -97,7 +99,6 @@ for idx = 1:num_cases
     geom.Ixs2 = (pi * r^4) / 4;
     geom.Jxs = (pi * r^4) / 2;
 
-    % 补全材料与环境参数 
     material.youngs_shell = 0;  
     material.poisson_shell = 0; 
     material.density = 1100;
@@ -114,23 +115,26 @@ for idx = 1:num_cases
     env.rho = 1.225; 
     env.eta = 0.1;
 
-    % === [核心配置] 绕过底层校验机制的单冰柱配置 ===
-    env.contact_params.ice_radius = 0.01;
-    env.contact_params.num_ice = 1; 
-
-    % 占位的假环形阵列参数，以骗过 createEnvironment 检查
-    env.contact_params.array_radius = 0; 
-    env.contact_params.array_center_dist = 0.2; 
-
+    % === 【核心修复3：恢复环形阵列接触配置】 ===
+    env.contact_params.ice_radius = 0.007;
+    env.contact_params.num_ice = num_ice_total; % 40根冰柱
+    env.contact_params.array_radius = 0.145;    % 圆周半径
+    env.contact_params.array_center_dist = 0.25;% 圆心距中心距离
+    
     env.contact_params.omega_mag = sim_params.omega_target; 
-    env.contact_params.omega_spin = 0; 
+    env.contact_params.omega_spin = 1.5; 
     env.contact_params.compute_friction = true; 
-    env.contact_params.active_time = 0.5; 
+    env.contact_params.active_time = sim_params.stable_time; % 稳定后再检测
     env.contact_params.sigma_t = 1.5e6;  
     env.contact_params.z_root = 0.02;     
+    env.contact_params.ice_length = 0.040; 
+    env.contact_params.ice_z_min = env.contact_params.z_root - env.contact_params.ice_length; 
+    env.contact_params.ice_z_max = env.contact_params.z_root; 
+    
     env.contact_params.rod_radius = geom.rod_r0;
-    env.contact_params.is_broken = false(1, 1); 
-    env.contact_params.peak_force = zeros(1, 1); 
+    env.contact_params.is_broken = false(1, num_ice_total); 
+    env.contact_params.peak_force = zeros(1, num_ice_total); 
+    % =================================================
 
     % --------------------------------------------------------
     % 2.3 初始化与仿真步进
@@ -140,12 +144,9 @@ for idx = 1:num_cases
         = createGeometry(nodes, edges, face_nodes);
 
     twist_angles = zeros(size(rod_edges,1)+size(rod_shell_joint_total_edges,1),1);
-
-    % 打包生成 environment 和 imc (此时里面还没有 ice_positions)
     [environment, imc] = createEnvironmentAndIMCStructs(env, geom, material, sim_params);
-
-    % 手动将真实的离散坐标强制写入 imc，让 IceContact.m 读取
-    imc.ice_positions = [0.2, 0.0]; 
+    
+    % 删除原来强制写入 ice_positions 的占位符，让底层自动生成环形坐标
     imc.theta_accumulated = 0;
 
     softRobot = MultiRod(geom, material, twist_angles, nodes, edges, rod_edges, shell_edges, ...
@@ -153,7 +154,6 @@ for idx = 1:num_cases
         face_edges, face_shell_edges, sim_params, environment);
     softRobot.nodes_local = nodes;
 
-    % 【修复对象转换为 double 报错】手动清理上一个循环遗留的对象数组
     clear stretch_springs bend_twist_springs hinge_springs triangle_springs;
 
     n_stretch = size(elStretchRod,1) + size(elStretchShell,1);
@@ -182,113 +182,110 @@ for idx = 1:num_cases
 
     Nsteps = round(sim_params.totalTime/sim_params.dt);
     ctime = 0; 
-    local_max_torque = 0; local_max_stress = 0;
-
+    
+    local_max_stress = 0;
+    active_torques = []; % 用于记录激活期间的所有扭矩样本
 
     for timeStep = 1:Nsteps
-    % ------------------ 转速爬坡 ------------------
-    if ctime < sim_params.ramp_time
-        current_omega_mag = (ctime / sim_params.ramp_time) * sim_params.omega_target;
-    else
-        current_omega_mag = sim_params.omega_target;
-    end
-    sim_params.omega = [0; 0; current_omega_mag];
-    imc.omega_mag = current_omega_mag;
+        if ctime < sim_params.ramp_time
+            current_omega_mag = (ctime / sim_params.ramp_time) * sim_params.omega_target;
+        else
+            current_omega_mag = sim_params.omega_target;
+        end
+        sim_params.omega = [0; 0; current_omega_mag];
+        imc.omega_mag = current_omega_mag;
 
-    % ------------------ 关键：延迟激活接触 ------------------
-    if ctime < sim_params.stable_time
-        % 前期关闭接触
-        environment.selfContact = false;   % 临时关闭
-        imc.active = false;                % 如果 IceContact 有 active 字段
-        imc.is_active = false;             % 或者用这个字段（视你的 IceContact 实现）
-    else
-        % 稳定后开启
-        environment.selfContact = true;
-        imc.active = true;
-        imc.is_active = true;
-        % 可选：让冰柱从远处快速移入（避免突然出现）
-        % imc.ice_positions = ... 动态调整
-    end
-
-    % 累加角度（即使没激活也累加，保证相位正确）
-    imc.theta_accumulated = imc.theta_accumulated + current_omega_mag * sim_params.dt;
-
-    % 调用 timeStepper
-    [softRobot, stretch_springs, bend_twist_springs, hinge_springs, force_now, imc] = ...
-        timeStepper(softRobot, stretch_springs, bend_twist_springs, hinge_springs, ...
-                    triangle_springs, [], environment, imc, sim_params, ctime);
-
-    % 后续记录逻辑不变...
-% end
-    % for timeStep = 1:Nsteps
-    %     if ctime < sim_params.ramp_time
-    %         current_omega_mag = (ctime / sim_params.ramp_time) * sim_params.omega_target;
-    %     else
-    %         current_omega_mag = sim_params.omega_target;
-    %     end
-    % 
-    %     sim_params.omega = [0; 0; current_omega_mag];
-    %     imc.omega_mag = current_omega_mag;            
-    %     imc.theta_accumulated = imc.theta_accumulated + current_omega_mag * sim_params.dt;
-    % 
-    %     [softRobot, stretch_springs, bend_twist_springs, hinge_springs, force_now, imc] = ...
-    %         timeStepper(softRobot, stretch_springs, bend_twist_springs, hinge_springs, ...
-    %         triangle_springs, [], environment, imc, sim_params, ctime);
-
-        if isfield(force_now, 'contact')
-            F_resistive = force_now.drag + force_now.coriolis + force_now.contact; 
-            F_res_vec = reshape(F_resistive(1:3*softRobot.n_nodes), 3, []);
-            nodes_pos = reshape(softRobot.q(1:3*softRobot.n_nodes), 3, []);
-            node_torques_z = nodes_pos(1, :) .* F_res_vec(2, :) - nodes_pos(2, :) .* F_res_vec(1, :);
-            current_torque = abs(sum(node_torques_z));
-            if current_torque > local_max_torque, local_max_torque = current_torque; end
+        if ctime < sim_params.stable_time
+            environment.selfContact = false;   
+            imc.active = false;                
+            imc.is_active = false;             
+        else
+            environment.selfContact = true;
+            imc.active = true;
+            imc.is_active = true;
         end
 
-        % === 【核心修复】动态计算根部弯曲应力 ===
-        % 1. 取出与第一根弯曲弹簧相关的边与节点索引
+        imc.theta_accumulated = imc.theta_accumulated + current_omega_mag * sim_params.dt;
+
+        [softRobot, stretch_springs, bend_twist_springs, hinge_springs, force_now, imc] = ...
+            timeStepper(softRobot, stretch_springs, bend_twist_springs, hinge_springs, ...
+                        triangle_springs, [], environment, imc, sim_params, ctime);
+
+       % === [方案 A] 同步修改：提取根部单元内部扭转力矩 (Transmitted Torque) ===
+        % 逻辑：计算由于碰撞导致的应力波传回马达轴心的真实力矩
+        n_nodes = softRobot.n_nodes;
+        twist_offset = 3 * n_nodes; 
+        
+        % 动态计算每根绳索的边缘数量（用于处理不同网格密度）
+        num_edges_per_rod = softRobot.n_edges_rod_only / 2;
+        root_edge_indices = [1, num_edges_per_rod + 1];
+        
+        total_internal_torque = 0;
+        for e_idx = root_edge_indices
+            if (twist_offset + e_idx) <= length(softRobot.q) && e_idx <= length(softRobot.refTwist)
+                % 1. 提取当前根部扭转角 theta
+                theta_current = softRobot.q(twist_offset + e_idx);
+                % 2. 计算扭转偏差 (减去马达端固定角 0 和参考扭率)
+                delta_theta = theta_current - 0 - softRobot.refTwist(e_idx);
+                % 3. M = (GJ / L) * delta_theta (注意：GJ 是标量)
+                torque_i = (softRobot.GJ / softRobot.refLen(e_idx)) * delta_theta;
+                
+                total_internal_torque = total_internal_torque + abs(torque_i);
+            end
+        end
+        current_torque = total_internal_torque;
+        
+        % 只有当达到稳定时间(冰柱激活)后，才收集扭矩样本以供后续计算 RMS
+        if ctime >= sim_params.stable_time
+            active_torques = [active_torques, current_torque];
+        end
+
+        % --- 计算根部弯曲应力不变 ---
         edge1_idx = bend_twist_springs(1).edges_ind(1);
         edge2_idx = bend_twist_springs(1).edges_ind(2);
         node1_idx = bend_twist_springs(1).nodes_ind(1);
         node2_idx = bend_twist_springs(1).nodes_ind(2);
         node3_idx = bend_twist_springs(1).nodes_ind(3);
 
-        % 2. 从软体机器人的全局状态 q 中提取连续 3 个节点的位置向量，转置为横向量(1x3)
         node1_loc = softRobot.q(3*node1_idx-2 : 3*node1_idx)';
         node2_loc = softRobot.q(3*node2_idx-2 : 3*node2_idx)';
         node3_loc = softRobot.q(3*node3_idx-2 : 3*node3_idx)';
 
-        % 3. 提取对应的材料主轴向量 (考虑符号修正)
         m1e = softRobot.m1(edge1_idx, :);
         m2e = bend_twist_springs(1).sgn(1) * softRobot.m2(edge1_idx, :);
         m1f = softRobot.m1(edge2_idx, :);
         m2f = bend_twist_springs(1).sgn(2) * softRobot.m2(edge2_idx, :);
 
-        % 4. 调用底层函数 computekappa 计算此刻真实曲率矢量
         kappa_root = computekappa(node1_loc, node2_loc, node3_loc, m1e, m2e, m1f, m2f);
-
-        % 5. 求曲率模长并换算为 MPa 应力
         root_kappa_mag = norm(kappa_root); 
         current_stress_MPa = (material.youngs_rod * root_kappa_mag * geom.rod_r0) / 1e6; 
         if current_stress_MPa > local_max_stress, local_max_stress = current_stress_MPa; end
-        % ======================================
 
         ctime = ctime + sim_params.dt;
         softRobot.q0 = softRobot.q; 
     end
 
-    res_peak_torque(idx) = local_max_torque;
+    % === 【核心修复5：结算 RMS 扭矩与击碎率】 ===
+    if ~isempty(active_torques)
+        res_rms_torque(idx) = sqrt(mean(active_torques.^2)); % 计算均方根扭矩
+    else
+        res_rms_torque(idx) = 0; % 完美闪避，没有数据
+    end
+    
     res_peak_stress(idx) = local_max_stress;
-    res_peak_force(idx)  = imc.peak_force(1);
-    res_is_broken(idx)   = (imc.peak_force(1) >= break_threshold);
+    
+    % 统计击碎了多少根冰柱
+    broken_count = sum(imc.is_broken);
+    res_break_rate(idx) = broken_count / num_ice_total; 
+    res_is_valid(idx)   = (res_break_rate(idx) >= target_break_rate); % 是否达标
 
-    fprintf(' -> 扭矩: %.3f N·m | 应力: %.1f MPa | 碰撞力: %.1f N | 击碎: %d\n', ...
-        local_max_torque, local_max_stress, res_peak_force(idx), res_is_broken(idx));
+    fprintf(' -> 均方根扭矩: %.3f N·m | 最大应力: %.1f MPa | 击碎率: %.1f%% (%d/%d) | 达标: %d\n', ...
+        res_rms_torque(idx), res_peak_stress(idx), res_break_rate(idx)*100, broken_count, num_ice_total, res_is_valid(idx));
+    % ====================================================
 end
 
 %% 3. 计算综合代价函数 (Cost Function)
-% 目标：在保证击碎冰柱 (约束) 的前提下，寻找扭矩和应力最小的平衡点
-
-norm_torque = res_peak_torque / max(res_peak_torque);
+norm_torque = res_rms_torque / max(res_rms_torque);
 norm_stress = res_peak_stress / max(res_peak_stress);
 
 w_torque = 0.5; 
@@ -296,11 +293,11 @@ w_stress = 0.5;
 
 cost_scores = zeros(num_cases, 1);
 for i = 1:num_cases
-    if ~res_is_broken(i)
-        % 硬约束约束：未能击碎冰块的，直接淘汰
+    if ~res_is_valid(i)
+        % 硬约束：未能达到 80% 击碎率的刚柔比，直接淘汰
         cost_scores(i) = inf;
     else
-        % 目标优化：计算综合代价 (越小越好)
+        % 目标优化：计算综合代价 (扭矩越小越好，应力越小越好)
         cost_scores(i) = w_torque * norm_torque(i) + w_stress * norm_stress(i);
     end
 end
@@ -311,32 +308,32 @@ best_ratio = ratios(best_idx);
 %% 4. 可视化与综合报告
 figure('Color', 'w', 'Position', [100, 100, 1200, 800]);
 
-% 子图 1: 马达扭矩与弯曲应力
+% 子图 1: RMS 扭矩与弯曲应力
 subplot(3, 1, 1);
 yyaxis left;
-plot(ratios, res_peak_torque, '-bo', 'LineWidth', 2, 'MarkerFaceColor', 'b');
-ylabel('Motor Torque [N·m]');
-ylim([0, max(res_peak_torque)*1.2]);
+plot(ratios, res_rms_torque, '-bo', 'LineWidth', 2, 'MarkerFaceColor', 'b');
+ylabel('Motor RMS Torque [N·m]');
+ylim([0, max(res_rms_torque)*1.2 + 0.01]);
 yyaxis right;
 plot(ratios, res_peak_stress, '-rs', 'LineWidth', 2, 'MarkerFaceColor', 'r');
-ylabel('Root Stress [MPa]');
-ylim([0, max(res_peak_stress)*1.2]);
+ylabel('Root Peak Stress [MPa]');
+ylim([0, max(res_peak_stress)*1.2 + 0.1]);
 set(gca, 'XDir', 'reverse'); 
-sorted_ratios = sort(ratios); % 先排序为递增序列满足 MATLAB 语法
+sorted_ratios = sort(ratios); 
 xticks(sorted_ratios); 
 xticklabels(arrayfun(@(x) sprintf('%d:1', x), sorted_ratios, 'UniformOutput', false));
-title('Raw Metrics: Motor Torque & Bending Stress'); grid on;
+title('Raw Metrics: Steady-State RMS Torque & Peak Bending Stress'); grid on;
 
-% 子图 2: 破冰碰撞力检测
+% 子图 2: 击碎率检测 (Breakage Rate)
 subplot(3, 1, 2); hold on;
-bar(ratios, res_peak_force, 'FaceColor', [0.7 0.7 0.7], 'EdgeColor', 'k');
-yline(break_threshold, 'r--', 'LineWidth', 2, 'Label', sprintf('Break Threshold %.1fN', break_threshold));
+bar(ratios, res_break_rate * 100, 'FaceColor', [0.3 0.7 0.9], 'EdgeColor', 'k');
+yline(target_break_rate * 100, 'r--', 'LineWidth', 2, 'Label', sprintf('Target Rate: %.0f%%', target_break_rate * 100));
 set(gca, 'XDir', 'reverse');
-sorted_ratios = sort(ratios); % 先排序为递增序列满足 MATLAB 语法
 xticks(sorted_ratios); 
 xticklabels(arrayfun(@(x) sprintf('%d:1', x), sorted_ratios, 'UniformOutput', false));
-ylabel('Collision Force [N]');
-title('Constraint Check: Ice Breaking Capability'); grid on;
+ylabel('Ice Breakage Rate [%]');
+ylim([0, 110]);
+title('Constraint Check: Ice Breakage Rate (Ring Array)'); grid on;
 
 % 子图 3: 综合代价函数评估曲线
 subplot(3, 1, 3); hold on;
@@ -347,7 +344,6 @@ if ~isinf(min_cost)
     text(ratios(best_idx), min_cost * 1.05, ' ★ Optimal', 'Color', 'g', 'FontWeight', 'bold', 'FontSize', 12);
 end
 set(gca, 'XDir', 'reverse');
-sorted_ratios = sort(ratios); % 先排序为递增序列满足 MATLAB 语法
 xticks(sorted_ratios); 
 xticklabels(arrayfun(@(x) sprintf('%d:1', x), sorted_ratios, 'UniformOutput', false));
 xlabel('Rigidity-Flexibility Ratio (L_{rope} : R_{hub})');
@@ -357,19 +353,18 @@ grid on; hold off;
 
 % 打印总结报告
 fprintf('\n================== 寻优结果总结 ==================\n');
-fprintf('比例\t节点数\t扭矩(N·m)\t根部应力(MPa)\t碰撞力(N)\t状态\t综合代价\n');
+fprintf('比例\tRMS扭矩(N·m)\t根部应力(MPa)\t击碎率(%%)\t状态\t综合代价\n');
 for i = 1:num_cases
     statStr = '淘汰'; costStr = 'INF';
-    if res_is_broken(i)
+    if res_is_valid(i)
         statStr = '达标'; costStr = sprintf('%.3f', cost_scores(i));
     end
-    n_nodes = max(5, round((total_length - total_length/(ratios(i)+1)) / target_l_bar) + 1);
-    fprintf('%d:1\t%d\t%.4f\t\t%.2f\t\t%.2f\t\t%s\t%s\n', ...
-        ratios(i), n_nodes, res_peak_torque(i), res_peak_stress(i), res_peak_force(i), statStr, costStr);
+    fprintf('%d:1\t%.4f\t\t%.2f\t\t%.1f\t\t%s\t%s\n', ...
+        ratios(i), res_rms_torque(i), res_peak_stress(i), res_break_rate(i)*100, statStr, costStr);
 end
 fprintf('==================================================\n');
 if isinf(min_cost)
-    fprintf('【警告】: 所有刚柔比配置均未能达到 58.9N 的击碎阈值，请考虑提高转速或选用更粗的绳索。\n');
+    fprintf('【警告】: 所有刚柔比配置均未能达到 %.0f%% 的击碎率约束，请考虑提高转速或选用更粗的绳索。\n', target_break_rate*100);
 else
     fprintf('>>> 自动寻优完成！推荐的最佳刚柔比为: 【 %d:1 】 <<<\n', best_ratio);
 end
